@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate plugin version matches tag
+        id: vcheck
+        run: |
+          set -e
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PLUGIN=$(grep -E '^[[:space:]]*\*[[:space:]]*Version:' heb-product-publisher.php \
+                   | head -1 | sed -E 's/.*Version:[[:space:]]*//' | tr -d '[:space:]')
+          echo "Tag: $TAG"
+          echo "Plugin header: $PLUGIN"
+          if [ "$TAG" != "$PLUGIN" ]; then
+            echo "::error title=Version mismatch::Tag v$TAG does not match plugin header version $PLUGIN"
+            exit 1
+          fi
+          echo "version=$PLUGIN" >> "$GITHUB_OUTPUT"
+
+      - name: Build zip
+        run: |
+          set -e
+          STAGE="$(mktemp -d)/heb-product-publisher"
+          mkdir -p "$STAGE"
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='build' \
+            --exclude='node_modules' \
+            --exclude='.idea' \
+            --exclude='.vscode' \
+            --exclude='.DS_Store' \
+            --exclude='*.zip' \
+            --exclude='tests' \
+            --exclude='phpunit.xml*' \
+            --exclude='composer.lock' \
+            ./ "$STAGE/"
+          mkdir -p build
+          (cd "$(dirname "$STAGE")" && zip -rq "$GITHUB_WORKSPACE/build/heb-product-publisher.zip" "heb-product-publisher")
+          ls -lh build/heb-product-publisher.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ steps.vcheck.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          files: build/heb-product-publisher.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
