@@ -37,18 +37,6 @@ class Heb_Product_Publisher_Hub_UI {
 		add_action( 'wp_ajax_heb_pp_fetch_site_info', [ $this, 'ajax_fetch_site_info' ] );
 		add_action( 'wp_ajax_heb_pp_distribute', [ $this, 'ajax_distribute' ] );
 		add_action( 'wp_ajax_heb_pp_test_site', [ $this, 'ajax_test_site' ] );
-		add_action( 'wp_ajax_heb_pp_preview', [ $this, 'ajax_preview' ] );
-	}
-
-	/**
-	 * 生成预览 transient 的 key（每个 用户+post+site 一把）。
-	 *
-	 * @param int    $post_id Source post id.
-	 * @param string $site_id Site id.
-	 * @return string
-	 */
-	private static function preview_key( $post_id, $site_id ) {
-		return 'heb_pp_prev_' . get_current_user_id() . '_' . (int) $post_id . '_' . md5( (string) $site_id );
 	}
 
 	/**
@@ -98,17 +86,11 @@ class Heb_Product_Publisher_Hub_UI {
 					'fetching'      => __( '获取目标站点信息中…', 'heb-product-publisher' ),
 					'translating'   => __( '翻译中，请稍候…', 'heb-product-publisher' ),
 					'distributing'  => __( '分发中…', 'heb-product-publisher' ),
-					'previewing'    => __( '生成预览中（翻译）…', 'heb-product-publisher' ),
 					'done'          => __( '完成。', 'heb-product-publisher' ),
 					'error'         => __( '请求失败', 'heb-product-publisher' ),
 					'selectAtLeast' => __( '请至少选择一个目标站点。', 'heb-product-publisher' ),
 					'noTerms'       => __( '暂无分类项。', 'heb-product-publisher' ),
 					'useSource'     => __( '未获取目标分类，按源站 slug 自动匹配（不存在则创建）。', 'heb-product-publisher' ),
-					'confirmTitle'  => __( '确认以下内容将被分发', 'heb-product-publisher' ),
-					'confirmBtn'    => __( '确认分发', 'heb-product-publisher' ),
-					'cancelBtn'     => __( '取消', 'heb-product-publisher' ),
-					'newOnTarget'   => __( '（目标站尚未导入，这是新建）', 'heb-product-publisher' ),
-					'noChange'      => __( '无变化', 'heb-product-publisher' ),
 				],
 			]
 		);
@@ -179,9 +161,6 @@ class Heb_Product_Publisher_Hub_UI {
 				<div class="heb-pp-actions">
 					<button type="button" class="button" id="heb-pp-btn-fetch">
 						<?php esc_html_e( '获取目标分类', 'heb-product-publisher' ); ?>
-					</button>
-					<button type="button" class="button" id="heb-pp-btn-preview" <?php disabled( ! $or_key_ready || 'auto-draft' === $post->post_status ); ?>>
-						<?php esc_html_e( '预览 diff', 'heb-product-publisher' ); ?>
 					</button>
 					<button type="button" class="button button-primary" id="heb-pp-btn-distribute" <?php disabled( ! $or_key_ready || 'auto-draft' === $post->post_status ); ?>>
 						<?php esc_html_e( '翻译并分发', 'heb-product-publisher' ); ?>
@@ -348,197 +327,6 @@ class Heb_Product_Publisher_Hub_UI {
 	}
 
 	/**
-	 * 预览：为每个选中站点生成 translated payload + 目标站当前态 + HTML diff，
-	 * 同时把翻译后的 payload 暂存到 transient（10 分钟），供"确认分发"复用。
-	 */
-	public function ajax_preview() {
-		if ( ! current_user_can( 'edit_posts' ) ) {
-			wp_send_json_error( [ 'message' => __( '权限不足。', 'heb-product-publisher' ) ], 403 );
-		}
-		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
-
-		$post_id = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
-		if ( $post_id <= 0 || ! current_user_can( 'edit_post', $post_id ) ) {
-			wp_send_json_error( [ 'message' => __( '无权编辑该文章。', 'heb-product-publisher' ) ], 403 );
-		}
-		$site_ids = isset( $_POST['site_ids'] ) && is_array( $_POST['site_ids'] )
-			? array_map( 'sanitize_text_field', wp_unslash( $_POST['site_ids'] ) )
-			: [];
-		if ( empty( $site_ids ) ) {
-			wp_send_json_error( [ 'message' => __( '未选择目标站点。', 'heb-product-publisher' ) ] );
-		}
-
-		$raw_overrides  = isset( $_POST['site_overrides'] ) && is_array( $_POST['site_overrides'] )
-			? wp_unslash( $_POST['site_overrides'] )
-			: [];
-		$site_overrides = $this->sanitize_site_overrides( $raw_overrides );
-
-		$basepayload = Heb_Product_Publisher_Sync::build_payload( $post_id );
-		if ( empty( $basepayload ) ) {
-			wp_send_json_error( [ 'message' => __( '无法构造 payload。', 'heb-product-publisher' ) ] );
-		}
-
-		$source_locale = isset( $basepayload['source_locale'] ) ? (string) $basepayload['source_locale'] : 'en_US';
-		$translator    = new Heb_Product_Publisher_Translator();
-		$results       = [];
-
-		foreach ( $site_ids as $sid ) {
-			$site = Heb_Product_Publisher_Admin_Settings::get_site( $sid );
-			if ( ! $site ) {
-				$results[ $sid ] = [ 'ok' => false, 'message' => __( '未找到站点。', 'heb-product-publisher' ) ];
-				continue;
-			}
-
-			$slug_strategy = isset( $site['slug_strategy'] ) && in_array( $site['slug_strategy'], [ 'source', 'localized' ], true )
-				? $site['slug_strategy']
-				: 'localized';
-
-			$target_locale = isset( $site['locale_override'] ) && '' !== $site['locale_override']
-				? $site['locale_override']
-				: '';
-			if ( '' === $target_locale ) {
-				$info = Heb_Product_Publisher_Remote_Client::post( $site, '/site-info', [ 'post_type' => $basepayload['post_type'] ], 15 );
-				if ( is_wp_error( $info ) ) {
-					$results[ $sid ] = [ 'ok' => false, 'message' => $info->get_error_message() ];
-					continue;
-				}
-				$target_locale = isset( $info['locale'] ) ? (string) $info['locale'] : '';
-			}
-
-			$payload = $basepayload;
-			$payload['slug_strategy'] = $slug_strategy;
-			if ( isset( $site_overrides[ $sid ] ) && is_array( $site_overrides[ $sid ] ) ) {
-				$payload['taxonomies'] = $site_overrides[ $sid ];
-			}
-
-			$warn  = [];
-			$stats = [];
-			if ( '' !== $target_locale && ! Heb_Product_Publisher_Translator::same_language( $source_locale, $target_locale ) ) {
-				$tr      = $translator->translate_payload( $payload, $source_locale, $target_locale );
-				$payload = isset( $tr['payload'] ) && is_array( $tr['payload'] ) ? $tr['payload'] : $payload;
-				$warn    = isset( $tr['errors'] ) ? $tr['errors'] : [];
-				$stats   = isset( $tr['stats'] ) ? $tr['stats'] : [];
-			}
-
-			$existing = Heb_Product_Publisher_Remote_Client::post(
-				$site,
-				'/get-imported',
-				[
-					'post_type'      => $basepayload['post_type'],
-					'source_post_id' => (int) $post_id,
-					'source_site'    => isset( $basepayload['source_site'] ) ? $basepayload['source_site'] : '',
-				],
-				15
-			);
-
-			$existing_data = null;
-			if ( is_array( $existing ) && ! empty( $existing['exists'] ) ) {
-				$existing_data = $existing;
-			}
-
-			$diff = $this->build_diff( $payload, $existing_data );
-
-			set_transient(
-				self::preview_key( $post_id, $sid ),
-				[
-					'payload'         => $payload,
-					'source_modified' => (int) get_post_modified_time( 'U', true, $post_id ),
-					'target_locale'   => $target_locale,
-				],
-				10 * MINUTE_IN_SECONDS
-			);
-
-			$results[ $sid ] = [
-				'ok'            => true,
-				'label'         => isset( $site['label'] ) ? $site['label'] : $sid,
-				'url'           => isset( $site['url'] ) ? $site['url'] : '',
-				'target_locale' => $target_locale,
-				'existing'      => $existing_data ? [
-					'post_id'  => (int) $existing_data['post_id'],
-					'edit_url' => isset( $existing_data['edit_url'] ) ? $existing_data['edit_url'] : '',
-					'modified' => isset( $existing_data['modified'] ) ? $existing_data['modified'] : '',
-				] : null,
-				'diff'          => $diff,
-				'stats'         => $stats,
-				'warn'          => $warn,
-			];
-		}
-
-		wp_send_json_success( $results );
-	}
-
-	/**
-	 * 生成每字段的 HTML diff（wp_text_diff），以及 seo key 的对比。
-	 *
-	 * @param array<string,mixed>      $next     即将发送的 payload。
-	 * @param array<string,mixed>|null $existing 目标站当前状态。
-	 * @return array<string,mixed>
-	 */
-	private function build_diff( array $next, $existing ) {
-		if ( ! function_exists( 'wp_text_diff' ) ) {
-			require_once ABSPATH . 'wp-admin/includes/revision.php';
-		}
-
-		$fields = [
-			'title'   => [ 'label' => __( '标题', 'heb-product-publisher' ), 'next' => (string) ( $next['title'] ?? '' ) ],
-			'excerpt' => [ 'label' => __( '摘要', 'heb-product-publisher' ), 'next' => (string) ( $next['excerpt'] ?? '' ) ],
-			'content' => [ 'label' => __( '正文', 'heb-product-publisher' ), 'next' => (string) ( $next['content'] ?? '' ) ],
-		];
-		$seo_next = isset( $next['seo'] ) && is_array( $next['seo'] ) ? $next['seo'] : [];
-		$seo_exist = $existing && isset( $existing['seo'] ) && is_array( $existing['seo'] ) ? $existing['seo'] : [];
-		$seo_labels = [
-			'title'          => __( 'SEO 标题', 'heb-product-publisher' ),
-			'metadesc'       => __( 'SEO Meta 描述', 'heb-product-publisher' ),
-			'focuskw'        => __( '焦点关键词', 'heb-product-publisher' ),
-			'og_title'       => __( 'OG 标题', 'heb-product-publisher' ),
-			'og_description' => __( 'OG 描述', 'heb-product-publisher' ),
-			'twitter_title'  => __( 'Twitter 标题', 'heb-product-publisher' ),
-			'twitter_desc'   => __( 'Twitter 描述', 'heb-product-publisher' ),
-		];
-		foreach ( $seo_labels as $k => $lbl ) {
-			if ( empty( $seo_next[ $k ] ) && empty( $seo_exist[ $k ] ) ) {
-				continue;
-			}
-			$fields[ 'seo.' . $k ] = [
-				'label' => $lbl,
-				'next'  => (string) ( $seo_next[ $k ] ?? '' ),
-				'prev'  => (string) ( $seo_exist[ $k ] ?? '' ),
-			];
-		}
-
-		$out = [];
-		foreach ( $fields as $key => $f ) {
-			$prev = isset( $f['prev'] ) ? $f['prev'] : ( $existing && isset( $existing[ $key ] ) ? (string) $existing[ $key ] : '' );
-			$next_s = (string) $f['next'];
-
-			$item = [
-				'label'  => $f['label'],
-				'prev'   => $prev,
-				'next'   => $next_s,
-				'status' => 'unchanged',
-			];
-
-			if ( '' === $prev && '' !== $next_s ) {
-				$item['status'] = 'added';
-			} elseif ( '' !== $prev && '' === $next_s ) {
-				$item['status'] = 'removed';
-			} elseif ( $prev !== $next_s ) {
-				$item['status'] = 'changed';
-				$item['diff']   = wp_text_diff(
-					$prev,
-					$next_s,
-					[
-						'title_left'  => __( '目标当前', 'heb-product-publisher' ),
-						'title_right' => __( '即将推送', 'heb-product-publisher' ),
-					]
-				);
-			}
-			$out[] = $item;
-		}
-		return $out;
-	}
-
-	/**
 	 * 单 post → 单站点的核心分发流程（供 ajax_distribute 与批量分发复用）。
 	 *
 	 * @param int                                                     $post_id        Source post id.
@@ -580,21 +368,7 @@ class Heb_Product_Publisher_Hub_UI {
 			$payload['taxonomies'] = $site_overrides[ $sid ];
 		}
 
-		// 预览缓存命中（同 post 未被再次编辑）：直接复用翻译结果，省 token。
-		$used_cache   = false;
-		$cache_key    = self::preview_key( $post_id, $sid );
-		$cached       = get_transient( $cache_key );
-		$current_mod  = (int) get_post_modified_time( 'U', true, $post_id );
-		if ( is_array( $cached ) && isset( $cached['payload'], $cached['source_modified'] ) && (int) $cached['source_modified'] === $current_mod ) {
-			$payload    = $cached['payload'];
-			$used_cache = true;
-			if ( isset( $site_overrides[ $sid ] ) && is_array( $site_overrides[ $sid ] ) ) {
-				$payload['taxonomies'] = $site_overrides[ $sid ];
-			}
-			$payload['slug_strategy'] = $slug_strategy;
-		}
-
-		if ( ! $used_cache && '' !== $target_locale && ! Heb_Product_Publisher_Translator::same_language( $source_locale, $target_locale ) ) {
+		if ( '' !== $target_locale && ! Heb_Product_Publisher_Translator::same_language( $source_locale, $target_locale ) ) {
 			$tr = $translator->translate_payload( $payload, $source_locale, $target_locale );
 			$payload          = isset( $tr['payload'] ) && is_array( $tr['payload'] ) ? $tr['payload'] : $payload;
 			$translate_errors = isset( $tr['errors'] ) ? $tr['errors'] : [];
@@ -622,10 +396,8 @@ class Heb_Product_Publisher_Hub_UI {
 			'translate' => $translate_stats,
 			'warn'      => $translate_errors,
 			'locale'    => $target_locale,
-			'used_cache'=> ! empty( $used_cache ),
 		];
 		$this->record_distribution( $post_id, $site, $target_locale, $r, $translate_stats, (int) round( ( microtime( true ) - $started ) * 1000 ), $basepayload );
-		delete_transient( $cache_key );
 		return $r;
 	}
 
