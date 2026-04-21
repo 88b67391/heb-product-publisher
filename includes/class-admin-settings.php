@@ -200,10 +200,14 @@ class Heb_Product_Publisher_Admin_Settings {
 			if ( ! is_array( $row ) ) {
 				continue;
 			}
-			$label  = isset( $row['label'] ) ? sanitize_text_field( (string) $row['label'] ) : '';
-			$url    = isset( $row['url'] ) ? esc_url_raw( trim( (string) $row['url'] ) ) : '';
-			$secret = isset( $row['receiver_secret'] ) ? sanitize_text_field( (string) $row['receiver_secret'] ) : '';
-			$locale = isset( $row['locale_override'] ) ? preg_replace( '/[^A-Za-z0-9_\-]/', '', (string) $row['locale_override'] ) : '';
+			$label    = isset( $row['label'] ) ? sanitize_text_field( (string) $row['label'] ) : '';
+			$url      = isset( $row['url'] ) ? esc_url_raw( trim( (string) $row['url'] ) ) : '';
+			$secret   = isset( $row['receiver_secret'] ) ? sanitize_text_field( (string) $row['receiver_secret'] ) : '';
+			$locale   = isset( $row['locale_override'] ) ? preg_replace( '/[^A-Za-z0-9_\-]/', '', (string) $row['locale_override'] ) : '';
+			$strategy = isset( $row['slug_strategy'] ) ? sanitize_key( (string) $row['slug_strategy'] ) : 'localized';
+			if ( ! in_array( $strategy, [ 'source', 'localized' ], true ) ) {
+				$strategy = 'localized';
+			}
 			$id     = isset( $row['id'] ) && is_string( $row['id'] ) && '' !== $row['id']
 				? preg_replace( '/[^a-z0-9]/', '', strtolower( $row['id'] ) )
 				: '';
@@ -222,6 +226,7 @@ class Heb_Product_Publisher_Admin_Settings {
 				'url'             => $url,
 				'receiver_secret' => $secret,
 				'locale_override' => (string) $locale,
+				'slug_strategy'   => $strategy,
 			];
 		}
 		return $out;
@@ -357,13 +362,14 @@ class Heb_Product_Publisher_Admin_Settings {
 							<th><?php esc_html_e( '标签', 'heb-product-publisher' ); ?></th>
 							<th><?php esc_html_e( '站点 URL', 'heb-product-publisher' ); ?></th>
 							<th><?php esc_html_e( '接收密钥', 'heb-product-publisher' ); ?></th>
-							<th style="width:140px"><?php esc_html_e( '目标语言（可选）', 'heb-product-publisher' ); ?></th>
+							<th style="width:120px"><?php esc_html_e( '目标语言（可选）', 'heb-product-publisher' ); ?></th>
+							<th style="width:160px"><?php esc_html_e( 'Slug 策略', 'heb-product-publisher' ); ?></th>
 							<th style="width:80px"></th>
 						</tr>
 					</thead>
 					<tbody id="heb-pp-sites-body">
 						<?php if ( empty( $sites ) ) : ?>
-							<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '' ], 0 ); ?>
+							<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '', 'slug_strategy' => 'localized' ], 0 ); ?>
 						<?php else : ?>
 							<?php foreach ( $sites as $i => $site ) : ?>
 								<?php $this->render_site_row( $site, $i ); ?>
@@ -425,7 +431,7 @@ class Heb_Product_Publisher_Admin_Settings {
 			</form>
 
 			<template id="heb-pp-site-row-tpl">
-				<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '' ], '__INDEX__' ); ?>
+				<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '', 'slug_strategy' => 'localized' ], '__INDEX__' ); ?>
 			</template>
 		</div>
 		<?php
@@ -438,7 +444,10 @@ class Heb_Product_Publisher_Admin_Settings {
 	 * @param int|string           $idx  Row index (or placeholder).
 	 */
 	private function render_site_row( $site, $idx ) {
-		$base = self::OPT_REMOTE_SITES . '[' . $idx . ']';
+		$base     = self::OPT_REMOTE_SITES . '[' . $idx . ']';
+		$strategy = isset( $site['slug_strategy'] ) && in_array( (string) $site['slug_strategy'], [ 'source', 'localized' ], true )
+			? (string) $site['slug_strategy']
+			: 'localized';
 		?>
 		<tr class="heb-pp-site-row">
 			<td>
@@ -453,6 +462,15 @@ class Heb_Product_Publisher_Admin_Settings {
 			</td>
 			<td>
 				<input type="text" name="<?php echo esc_attr( $base ); ?>[locale_override]" value="<?php echo esc_attr( isset( $site['locale_override'] ) ? $site['locale_override'] : '' ); ?>" placeholder="ja_JP" class="code" />
+			</td>
+			<td>
+				<select name="<?php echo esc_attr( $base ); ?>[slug_strategy]" class="heb-pp-slug-strategy">
+					<option value="localized" <?php selected( $strategy, 'localized' ); ?>><?php esc_html_e( '本地化（推荐）', 'heb-product-publisher' ); ?></option>
+					<option value="source" <?php selected( $strategy, 'source' ); ?>><?php esc_html_e( '沿用源站英文 slug', 'heb-product-publisher' ); ?></option>
+				</select>
+				<p class="description" style="margin:4px 0 0;font-size:11px;">
+					<?php esc_html_e( '"本地化"：目标站根据翻译后标题生成 slug（SEO 更友好）；"源站"：保持英文 URL。', 'heb-product-publisher' ); ?>
+				</p>
 			</td>
 			<td>
 				<button type="button" class="button heb-pp-remove-site"><?php esc_html_e( '删除', 'heb-product-publisher' ); ?></button>

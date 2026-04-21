@@ -55,6 +55,76 @@ class Heb_Product_Publisher_Receiver {
 				'permission_callback' => '__return_true',
 			]
 		);
+		register_rest_route(
+			'heb-publisher/v1',
+			'/get-imported',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ $this, 'rest_get_imported' ],
+				'permission_callback' => '__return_true',
+			]
+		);
+	}
+
+	/**
+	 * Hub 预览用：根据 source_post_id + source_site 查询目标站当前导入态。
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function rest_get_imported( $request ) {
+		$secret = self::get_secret();
+		if ( '' === $secret ) {
+			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) ) {
+			$body = [];
+		}
+		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+
+		$post_type      = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : 'products';
+		$source_post_id = isset( $body['source_post_id'] ) ? (int) $body['source_post_id'] : 0;
+		$source_site    = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+
+		if ( ! post_type_exists( $post_type ) || $source_post_id <= 0 || '' === $source_site ) {
+			return rest_ensure_response( [ 'exists' => false ] );
+		}
+
+		$existing_id = $this->find_by_source( $post_type, $source_post_id, $source_site );
+		if ( $existing_id <= 0 ) {
+			return rest_ensure_response( [ 'exists' => false ] );
+		}
+
+		$post = get_post( $existing_id );
+		if ( ! $post ) {
+			return rest_ensure_response( [ 'exists' => false ] );
+		}
+
+		$seo_map = class_exists( 'Heb_Product_Publisher_Sync' ) ? Heb_Product_Publisher_Sync::seo_key_map() : [];
+		$seo     = [];
+		foreach ( $seo_map as $sem => $mk ) {
+			$v = get_post_meta( $existing_id, $mk, true );
+			if ( is_string( $v ) && '' !== trim( $v ) ) {
+				$seo[ $sem ] = $v;
+			}
+		}
+
+		return rest_ensure_response(
+			[
+				'exists'   => true,
+				'post_id'  => $existing_id,
+				'edit_url' => admin_url( 'post.php?post=' . $existing_id . '&action=edit' ),
+				'title'    => $post->post_title,
+				'excerpt'  => $post->post_excerpt,
+				'content'  => $post->post_content,
+				'status'   => $post->post_status,
+				'seo'      => $seo,
+				'modified' => get_post_modified_time( 'c', true, $existing_id ),
+			]
+		);
 	}
 
 	/**
@@ -80,8 +150,12 @@ class Heb_Product_Publisher_Receiver {
 			return new \WP_Error( 'heb_pub_bad_type', __( 'Post type does not exist.', 'heb-product-publisher' ), [ 'status' => 400 ] );
 		}
 
-		$title   = isset( $body['title'] ) ? sanitize_text_field( (string) $body['title'] ) : '';
-		$slug    = isset( $body['slug'] ) ? sanitize_title( (string) $body['slug'] ) : '';
+		$title         = isset( $body['title'] ) ? sanitize_text_field( (string) $body['title'] ) : '';
+		$slug          = isset( $body['slug'] ) ? sanitize_title( (string) $body['slug'] ) : '';
+		$slug_strategy = isset( $body['slug_strategy'] ) ? sanitize_key( (string) $body['slug_strategy'] ) : 'localized';
+		if ( ! in_array( $slug_strategy, [ 'source', 'localized' ], true ) ) {
+			$slug_strategy = 'localized';
+		}
 		$content = isset( $body['content'] ) ? wp_kses_post( (string) $body['content'] ) : '';
 		$excerpt = isset( $body['excerpt'] ) ? sanitize_textarea_field( (string) $body['excerpt'] ) : '';
 		$status  = isset( $body['status'] ) ? sanitize_key( (string) $body['status'] ) : 'draft';
@@ -99,7 +173,7 @@ class Heb_Product_Publisher_Receiver {
 		if ( $source_post_id > 0 && '' !== $source_site ) {
 			$existing_id = $this->find_by_source( $post_type, $source_post_id, $source_site );
 		}
-		if ( ! $existing_id && '' !== $slug ) {
+		if ( ! $existing_id && '' !== $slug && 'source' === $slug_strategy ) {
 			$existing = get_posts(
 				[
 					'post_type'      => $post_type,
@@ -113,7 +187,18 @@ class Heb_Product_Publisher_Receiver {
 				$existing_id = (int) $existing[0];
 			}
 		}
-		if ( '' === $slug ) {
+
+		// slug_strategy=localized 时：首次创建根据翻译后标题生成；更新时保留现有 slug，避免外链失效。
+		if ( 'localized' === $slug_strategy ) {
+			if ( $existing_id > 0 ) {
+				$existing_slug = get_post_field( 'post_name', $existing_id );
+				$slug          = is_string( $existing_slug ) && '' !== $existing_slug
+					? $existing_slug
+					: sanitize_title( $title );
+			} else {
+				$slug = sanitize_title( $title );
+			}
+		} elseif ( '' === $slug ) {
 			$slug = sanitize_title( $title );
 		}
 
@@ -168,6 +253,10 @@ class Heb_Product_Publisher_Receiver {
 			}
 		}
 
+		if ( ! empty( $body['seo'] ) && is_array( $body['seo'] ) ) {
+			$this->apply_seo_meta( $post_id, $body['seo'] );
+		}
+
 		if ( $source_post_id > 0 ) {
 			update_post_meta( $post_id, '_heb_publisher_source_post_id', $source_post_id );
 		}
@@ -183,6 +272,38 @@ class Heb_Product_Publisher_Receiver {
 				'edit_url' => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
 			]
 		);
+	}
+
+	/**
+	 * 写回 Yoast SEO meta。未装 Yoast 也无妨：写入 meta 不会报错，启用后即生效。
+	 *
+	 * @param int                  $post_id Target post id.
+	 * @param array<string,string> $seo     Sematic seo data.
+	 */
+	private function apply_seo_meta( $post_id, array $seo ) {
+		$map = class_exists( 'Heb_Product_Publisher_Sync' ) ? Heb_Product_Publisher_Sync::seo_key_map() : [
+			'title'          => '_yoast_wpseo_title',
+			'metadesc'       => '_yoast_wpseo_metadesc',
+			'focuskw'        => '_yoast_wpseo_focuskw',
+			'og_title'       => '_yoast_wpseo_opengraph-title',
+			'og_description' => '_yoast_wpseo_opengraph-description',
+			'twitter_title'  => '_yoast_wpseo_twitter-title',
+			'twitter_desc'   => '_yoast_wpseo_twitter-description',
+		];
+		foreach ( $map as $sem => $mk ) {
+			if ( ! isset( $seo[ $sem ] ) ) {
+				continue;
+			}
+			$v = $seo[ $sem ];
+			if ( ! is_string( $v ) ) {
+				continue;
+			}
+			if ( '' === trim( $v ) ) {
+				delete_post_meta( $post_id, $mk );
+				continue;
+			}
+			update_post_meta( $post_id, $mk, sanitize_text_field( $v ) );
+		}
 	}
 
 	/**

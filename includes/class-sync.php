@@ -121,9 +121,57 @@ class Heb_Product_Publisher_Sync {
 			'featured_url'   => $feat_url ? (string) $feat_url : '',
 			'acf'            => $acf,
 			'taxonomies'     => self::get_term_slugs_map( $post_id ),
+			'seo'            => self::get_seo_meta( $post_id ),
 			'source_post_id' => (int) $post_id,
 			'source_site'    => wp_parse_url( home_url(), PHP_URL_HOST ),
 			'source_locale'  => Heb_Product_Publisher_Admin_Settings::source_locale(),
+			'source_modified' => (int) get_post_modified_time( 'U', true, $post_id ),
+		];
+	}
+
+	/**
+	 * 收集 Yoast SEO 相关 post meta（只保留有值的字段）。
+	 *
+	 * 键名使用"语义名"而不是 Yoast 原始 key，Receiver 再映射回 meta key，避免
+	 * 目标站未装 Yoast 时污染 DB。
+	 *
+	 * @param int $post_id Post id.
+	 * @return array<string,string>
+	 */
+	public static function get_seo_meta( $post_id ) {
+		$map = [
+			'title'          => '_yoast_wpseo_title',
+			'metadesc'       => '_yoast_wpseo_metadesc',
+			'focuskw'        => '_yoast_wpseo_focuskw',
+			'og_title'       => '_yoast_wpseo_opengraph-title',
+			'og_description' => '_yoast_wpseo_opengraph-description',
+			'twitter_title'  => '_yoast_wpseo_twitter-title',
+			'twitter_desc'   => '_yoast_wpseo_twitter-description',
+		];
+		$out = [];
+		foreach ( $map as $sem => $mk ) {
+			$v = get_post_meta( $post_id, $mk, true );
+			if ( is_string( $v ) && '' !== trim( $v ) ) {
+				$out[ $sem ] = $v;
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * 给 Receiver 用：语义名 → Yoast meta key。
+	 *
+	 * @return array<string,string>
+	 */
+	public static function seo_key_map() {
+		return [
+			'title'          => '_yoast_wpseo_title',
+			'metadesc'       => '_yoast_wpseo_metadesc',
+			'focuskw'        => '_yoast_wpseo_focuskw',
+			'og_title'       => '_yoast_wpseo_opengraph-title',
+			'og_description' => '_yoast_wpseo_opengraph-description',
+			'twitter_title'  => '_yoast_wpseo_twitter-title',
+			'twitter_desc'   => '_yoast_wpseo_twitter-description',
 		];
 	}
 }

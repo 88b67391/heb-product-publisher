@@ -177,16 +177,7 @@
 			});
 		});
 
-		$('#heb-pp-btn-distribute').on('click', function () {
-			var ids = selectedSiteIds();
-			if (!ids.length) {
-				alert(HebPPHub.i18n.selectAtLeast);
-				return;
-			}
-			$('#heb-pp-result').empty();
-			setBusy(this, true);
-			$(this).text(HebPPHub.i18n.translating);
-
+		function buildDistributeData(ids) {
 			var overrides = collectOverrides();
 			var data = {
 				action: 'heb_pp_distribute',
@@ -194,7 +185,6 @@
 				post_id: postId
 			};
 			data['site_ids[]'] = ids;
-
 			Object.keys(overrides).forEach(function (sid) {
 				var taxes = overrides[sid];
 				Object.keys(taxes).forEach(function (taxKey) {
@@ -207,6 +197,16 @@
 					}
 				});
 			});
+			return data;
+		}
+
+		function doDistribute(ids) {
+			$('#heb-pp-result').empty();
+			var $btn = $('#heb-pp-btn-distribute');
+			setBusy($btn, true);
+			$btn.text(HebPPHub.i18n.distributing);
+
+			var data = buildDistributeData(ids);
 
 			$.post(HebPPHub.ajaxUrl, data).done(function (resp) {
 				if (!resp || !resp.success) {
@@ -219,8 +219,141 @@
 			}).fail(function (xhr) {
 				alert(HebPPHub.i18n.error + ': ' + xhr.status);
 			}).always(function () {
-				setBusy($('#heb-pp-btn-distribute'), false);
+				setBusy($btn, false);
 			});
+		}
+
+		$('#heb-pp-btn-distribute').on('click', function () {
+			var ids = selectedSiteIds();
+			if (!ids.length) {
+				alert(HebPPHub.i18n.selectAtLeast);
+				return;
+			}
+			doDistribute(ids);
+		});
+
+		/* ------- 预览 diff ------- */
+
+		function renderDiffPanel(perSite) {
+			var $panel = $('#heb-pp-preview-panel');
+			if (!$panel.length) {
+				$panel = $('<div id="heb-pp-preview-panel" class="heb-pp-preview-panel"></div>');
+				$('#heb-pp-result').after($panel);
+			}
+			$panel.empty();
+
+			var statusLabel = {
+				added:     '<span class="heb-pp-diff-st heb-pp-diff-st--add">新增</span>',
+				removed:   '<span class="heb-pp-diff-st heb-pp-diff-st--rm">清空</span>',
+				changed:   '<span class="heb-pp-diff-st heb-pp-diff-st--ch">修改</span>',
+				unchanged: '<span class="heb-pp-diff-st heb-pp-diff-st--un">未变</span>'
+			};
+
+			Object.keys(perSite).forEach(function (sid) {
+				var res = perSite[sid];
+				var $site = $('<section class="heb-pp-preview-site"></section>');
+				var head = '<header><strong>' + escapeHtml(res.label || sid) + '</strong>';
+				if (res.target_locale) head += ' <code>' + escapeHtml(res.target_locale) + '</code>';
+				if (res.existing && res.existing.post_id) {
+					head += ' · <a href="' + res.existing.edit_url + '" target="_blank" rel="noopener">#' + res.existing.post_id + '</a>';
+				} else {
+					head += ' · <em>' + escapeHtml(HebPPHub.i18n.newOnTarget) + '</em>';
+				}
+				if (res.stats && res.stats.strings) {
+					head += ' · ' + res.stats.translated + '/' + res.stats.strings + ' 翻译';
+				}
+				head += '</header>';
+				$site.append(head);
+
+				if (!res.ok) {
+					$site.append('<p class="heb-pp-bad">' + escapeHtml(res.message || HebPPHub.i18n.error) + '</p>');
+					$panel.append($site);
+					return;
+				}
+
+				var $list = $('<div class="heb-pp-diff-list"></div>');
+				(res.diff || []).forEach(function (f) {
+					var $row = $('<div class="heb-pp-diff-row"></div>');
+					$row.append(
+						'<div class="heb-pp-diff-head">' +
+							(statusLabel[f.status] || '') +
+							' <strong>' + escapeHtml(f.label) + '</strong>' +
+						'</div>'
+					);
+					if (f.status === 'added') {
+						$row.append('<div class="heb-pp-diff-added"><pre>' + escapeHtml(f.next) + '</pre></div>');
+					} else if (f.status === 'removed') {
+						$row.append('<div class="heb-pp-diff-removed"><pre>' + escapeHtml(f.prev) + '</pre></div>');
+					} else if (f.status === 'changed' && f.diff) {
+						$row.append('<div class="heb-pp-diff-body">' + f.diff + '</div>');
+					} else {
+						$row.append('<div class="heb-pp-diff-muted">' + escapeHtml(HebPPHub.i18n.noChange) + '</div>');
+					}
+					$list.append($row);
+				});
+				$site.append($list);
+
+				if (res.warn && res.warn.length) {
+					var $warn = $('<div class="heb-pp-warn-list"></div>');
+					res.warn.forEach(function (w) {
+						$warn.append('<div class="heb-pp-warn">⚠ ' + escapeHtml(w) + '</div>');
+					});
+					$site.append($warn);
+				}
+
+				$panel.append($site);
+			});
+
+			var $footer = $('<div class="heb-pp-preview-footer"></div>');
+			$footer.append(
+				'<button type="button" class="button button-primary button-large" id="heb-pp-btn-confirm">' +
+					escapeHtml(HebPPHub.i18n.confirmBtn) +
+				'</button> ' +
+				'<button type="button" class="button" id="heb-pp-btn-cancel-preview">' +
+					escapeHtml(HebPPHub.i18n.cancelBtn) +
+				'</button>'
+			);
+			$panel.prepend('<h3 class="heb-pp-preview-title">' + escapeHtml(HebPPHub.i18n.confirmTitle) + '</h3>');
+			$panel.append($footer);
+
+			$('html, body').animate({ scrollTop: $panel.offset().top - 80 }, 300);
+		}
+
+		$box.on('click', '#heb-pp-btn-preview', function () {
+			var ids = selectedSiteIds();
+			if (!ids.length) {
+				alert(HebPPHub.i18n.selectAtLeast);
+				return;
+			}
+			$('#heb-pp-result').empty();
+			$('#heb-pp-preview-panel').remove();
+			setBusy(this, true);
+			$(this).text(HebPPHub.i18n.previewing);
+
+			var data = buildDistributeData(ids);
+			data.action = 'heb_pp_preview';
+
+			$.post(HebPPHub.ajaxUrl, data).done(function (resp) {
+				if (!resp || !resp.success) {
+					alert((resp && resp.data && resp.data.message) || HebPPHub.i18n.error);
+					return;
+				}
+				renderDiffPanel(resp.data);
+			}).fail(function (xhr) {
+				alert(HebPPHub.i18n.error + ': ' + xhr.status);
+			}).always(function () {
+				setBusy($('#heb-pp-btn-preview'), false);
+			});
+		});
+
+		$(document).on('click', '#heb-pp-btn-confirm', function () {
+			var ids = selectedSiteIds();
+			if (!ids.length) return;
+			$('#heb-pp-preview-panel').remove();
+			doDistribute(ids);
+		});
+		$(document).on('click', '#heb-pp-btn-cancel-preview', function () {
+			$('#heb-pp-preview-panel').remove();
 		});
 	});
 })(jQuery);

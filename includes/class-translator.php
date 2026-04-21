@@ -308,7 +308,7 @@ class Heb_Product_Publisher_Translator {
 			. "Rules: "
 			. "1) Output MUST be a single JSON object with exactly the same keys as the input; every input key must appear in the output. "
 			. "2) Preserve HTML tags, attributes, entities and whitespace exactly; only translate visible text nodes. "
-			. "3) Do NOT translate and KEEP verbatim: URLs, email addresses, numbers, measurements, dates, brand names, SKU/product codes (e.g. 108D/2, GRS, SD, FOB, T/T, L/C, D/P, D/A), file paths, CSS/HTML identifiers, placeholder tokens like {xxx}, %s, [tag]. "
+			. "3) Do NOT translate and KEEP verbatim: URLs, email addresses, numbers, measurements, dates, brand names, SKU/product codes (e.g. 108D/2, GRS, SD, FOB, T/T, L/C, D/P, D/A), file paths, CSS/HTML identifiers, placeholder tokens like {xxx}, %s, [tag], and Yoast SEO variables wrapped in double percent signs like %%title%%, %%sep%%, %%sitename%%, %%page%%, %%primary_category%%. "
 			. "4) If a value looks like an identifier/enum key (e.g. 'paypal', 'odm', 'oem', 'both', 'tt', 'lc'), keep it unchanged. "
 			. "5) Translate natural-language sentences, product descriptions and marketing copy into {$dst} using the appropriate professional industry terminology. "
 			. "6) Return ONLY the JSON object. No explanation, no markdown fences, no preamble.";

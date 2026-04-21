@@ -25,9 +25,26 @@ require_once __DIR__ . '/class-remote-client.php';
 require_once __DIR__ . '/class-admin-settings.php';
 require_once __DIR__ . '/class-hub-ui.php';
 require_once __DIR__ . '/class-updater.php';
+require_once __DIR__ . '/class-log.php';
+require_once __DIR__ . '/class-log-admin.php';
+require_once __DIR__ . '/class-product-columns.php';
+require_once __DIR__ . '/class-bulk.php';
 
 Heb_Product_Publisher_Receiver::instance();
 Heb_Product_Publisher_Site_Info::instance();
 Heb_Product_Publisher_Admin_Settings::instance();
 Heb_Product_Publisher_Hub_UI::instance();
 Heb_Product_Publisher_Updater::instance();
+Heb_Product_Publisher_Log_Admin::instance();
+Heb_Product_Publisher_Product_Columns::instance();
+Heb_Product_Publisher_Bulk::instance();
+
+// 兜底：首次启用后访问管理页自动建表。
+add_action(
+	'admin_init',
+	static function () {
+		if ( class_exists( 'Heb_Product_Publisher_Log' ) && ! Heb_Product_Publisher_Log::table_exists() ) {
+			Heb_Product_Publisher_Log::install();
+		}
+	}
+);
