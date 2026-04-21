@@ -1,0 +1,45 @@
+.heb-pp-settings h2.title {
+	margin-top: 24px;
+	padding-top: 12px;
+	border-top: 1px solid #dcdcde;
+}
+
+.heb-pp-sites-table {
+	margin-top: 8px;
+}
+
+.heb-pp-sites-table th,
+.heb-pp-sites-table td {
+	vertical-align: top;
+	padding: 8px;
+}
+
+.heb-pp-sites-table input[type=text],
+.heb-pp-sites-table input[type=url] {
+	width: 100%;
+}
+
+.heb-pp-remove-site {
+	color: #b32d2e;
+}
+
+.heb-pp-test-result {
+	margin-top: 8px;
+}
+
+.heb-pp-test-result-item {
+	padding: 6px 10px;
+	border-radius: 3px;
+	margin-bottom: 4px;
+	font-size: 13px;
+}
+
+.heb-pp-test-result-item.ok {
+	background: #edfaef;
+	border-left: 3px solid #00a32a;
+}
+
+.heb-pp-test-result-item.err {
+	background: #fcf0f1;
+	border-left: 3px solid #b32d2e;
+}
