@@ -55,6 +55,15 @@ class Heb_Product_Publisher_Receiver {
 				'permission_callback' => '__return_true',
 			]
 		);
+		register_rest_route(
+			'heb-publisher/v1',
+			'/sync-lang-map',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ $this, 'rest_sync_lang_map' ],
+				'permission_callback' => '__return_true',
+			]
+		);
 	}
 
 	/**
@@ -193,6 +202,9 @@ class Heb_Product_Publisher_Receiver {
 		if ( '' !== $source_site ) {
 			update_post_meta( $post_id, '_heb_publisher_source_site', $source_site );
 		}
+		if ( ! empty( $body['lang_map'] ) && is_array( $body['lang_map'] ) ) {
+			update_post_meta( $post_id, '_heb_pp_lang_map', $this->sanitize_lang_map( $body['lang_map'] ) );
+		}
 
 		return rest_ensure_response(
 			[
@@ -200,8 +212,62 @@ class Heb_Product_Publisher_Receiver {
 				'post_id'  => $post_id,
 				'created'  => 0 === $existing_id,
 				'edit_url' => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
+				'permalink' => get_permalink( $post_id ),
 			]
 		);
+	}
+
+	/**
+	 * 同步语言 URL 映射到已导入文章（Hub 在每次分发成功后广播）。
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function rest_sync_lang_map( $request ) {
+		$secret = self::get_secret();
+		if ( '' === $secret ) {
+			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) ) {
+			$body = [];
+		}
+		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		$post_type      = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : 'products';
+		$source_post_id = isset( $body['source_post_id'] ) ? (int) $body['source_post_id'] : 0;
+		$source_site    = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+		$lang_map       = isset( $body['lang_map'] ) && is_array( $body['lang_map'] ) ? $this->sanitize_lang_map( $body['lang_map'] ) : [];
+
+		if ( ! post_type_exists( $post_type ) || $source_post_id <= 0 || '' === $source_site ) {
+			return new \WP_Error( 'heb_pub_bad_payload', __( 'Bad payload.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+		$post_id = $this->find_by_source( $post_type, $source_post_id, $source_site );
+		if ( $post_id <= 0 ) {
+			return rest_ensure_response( [ 'success' => true, 'updated' => false ] );
+		}
+		update_post_meta( $post_id, '_heb_pp_lang_map', $lang_map );
+		return rest_ensure_response( [ 'success' => true, 'updated' => true ] );
+	}
+
+	/**
+	 * 规范化语言映射：lang => URL。
+	 *
+	 * @param array<string,mixed> $map Raw map.
+	 * @return array<string,string>
+	 */
+	private function sanitize_lang_map( array $map ) {
+		$out = [];
+		foreach ( $map as $lang => $url ) {
+			$lang = strtolower( sanitize_key( (string) $lang ) );
+			$url  = esc_url_raw( (string) $url );
+			if ( '' === $lang || '' === $url ) {
+				continue;
+			}
+			$out[ $lang ] = $url;
+		}
+		return $out;
 	}
 
 	/**

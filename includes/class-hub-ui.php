@@ -327,6 +327,104 @@ class Heb_Product_Publisher_Hub_UI {
 	}
 
 	/**
+	 * @param string $locale Locale string.
+	 * @return string
+	 */
+	private function locale_to_lang( $locale ) {
+		$locale = strtolower( trim( (string) $locale ) );
+		if ( '' === $locale ) {
+			return '';
+		}
+		if ( false !== strpos( $locale, '_' ) ) {
+			$parts = explode( '_', $locale );
+			return sanitize_key( (string) $parts[0] );
+		}
+		if ( false !== strpos( $locale, '-' ) ) {
+			$parts = explode( '-', $locale );
+			return sanitize_key( (string) $parts[0] );
+		}
+		return sanitize_key( $locale );
+	}
+
+	/**
+	 * @param int                  $post_id Source post id.
+	 * @param array<string,mixed>  $basepayload Base payload.
+	 * @return array<string,string>
+	 */
+	private function get_lang_map( $post_id, array $basepayload ) {
+		$map = get_post_meta( $post_id, '_heb_pp_lang_map', true );
+		$out = [];
+		if ( is_array( $map ) ) {
+			foreach ( $map as $lang => $url ) {
+				$lang = sanitize_key( (string) $lang );
+				$url  = esc_url_raw( (string) $url );
+				if ( '' !== $lang && '' !== $url ) {
+					$out[ $lang ] = $url;
+				}
+			}
+		}
+		$src_lang = $this->locale_to_lang( isset( $basepayload['source_locale'] ) ? (string) $basepayload['source_locale'] : get_locale() );
+		$src_url  = get_permalink( $post_id );
+		if ( '' !== $src_lang && is_string( $src_url ) && '' !== $src_url ) {
+			$out[ $src_lang ] = $src_url;
+		}
+		return $out;
+	}
+
+	/**
+	 * 分发成功后更新源站 map 并同步到所有远端站点。
+	 *
+	 * @param int                  $post_id Source post id.
+	 * @param array<string,mixed>  $basepayload Payload.
+	 * @param array<string,string> $site Remote site row.
+	 * @param string               $target_locale Target locale.
+	 * @param array<string,mixed>  $result Push result.
+	 */
+	private function refresh_lang_map( $post_id, array $basepayload, array $site, $target_locale, array $result ) {
+		if ( empty( $result['ok'] ) ) {
+			return;
+		}
+		$lang = $this->locale_to_lang( $target_locale );
+		$url  = isset( $result['permalink'] ) ? esc_url_raw( (string) $result['permalink'] ) : '';
+		if ( '' === $url && ! empty( $result['post_id'] ) && ! empty( $site['url'] ) ) {
+			$url = rtrim( (string) $site['url'], '/' ) . '/?p=' . (int) $result['post_id'];
+		}
+		if ( '' === $lang || '' === $url ) {
+			return;
+		}
+		$map          = $this->get_lang_map( $post_id, $basepayload );
+		$map[ $lang ] = $url;
+		update_post_meta( $post_id, '_heb_pp_lang_map', $map );
+		$this->sync_lang_map_to_all_sites( $basepayload, $map );
+	}
+
+	/**
+	 * @param array<string,mixed>   $basepayload Payload.
+	 * @param array<string,string>  $lang_map    Lang map.
+	 */
+	private function sync_lang_map_to_all_sites( array $basepayload, array $lang_map ) {
+		$post_type      = isset( $basepayload['post_type'] ) ? sanitize_key( (string) $basepayload['post_type'] ) : '';
+		$source_post_id = isset( $basepayload['source_post_id'] ) ? (int) $basepayload['source_post_id'] : 0;
+		$source_site    = isset( $basepayload['source_site'] ) ? sanitize_text_field( (string) $basepayload['source_site'] ) : '';
+		if ( '' === $post_type || $source_post_id <= 0 || '' === $source_site || empty( $lang_map ) ) {
+			return;
+		}
+		foreach ( Heb_Product_Publisher_Admin_Settings::remote_sites() as $s ) {
+			Heb_Product_Publisher_Remote_Client::post(
+				$s,
+				'/sync-lang-map',
+				[
+					'post_type'      => $post_type,
+					'source_post_id' => $source_post_id,
+					'source_site'    => $source_site,
+					'lang_map'       => $lang_map,
+				],
+				15
+			);
+		}
+	}
+
+	/**
 	 * 单 post → 单站点的核心分发流程（供 ajax_distribute 与批量分发复用）。
 	 *
 	 * @param int                                                     $post_id        Source post id.
@@ -363,6 +461,7 @@ class Heb_Product_Publisher_Hub_UI {
 		$translate_stats  = [];
 		$payload          = $basepayload;
 		$payload['slug_strategy'] = $slug_strategy;
+		$payload['lang_map']      = $this->get_lang_map( $post_id, $basepayload );
 
 		if ( isset( $site_overrides[ $sid ] ) && is_array( $site_overrides[ $sid ] ) ) {
 			$payload['taxonomies'] = $site_overrides[ $sid ];
@@ -392,12 +491,14 @@ class Heb_Product_Publisher_Hub_UI {
 			'ok'        => true,
 			'post_id'   => isset( $push['post_id'] ) ? (int) $push['post_id'] : 0,
 			'edit_url'  => isset( $push['edit_url'] ) ? (string) $push['edit_url'] : '',
+			'permalink' => isset( $push['permalink'] ) ? (string) $push['permalink'] : '',
 			'created'   => ! empty( $push['created'] ),
 			'translate' => $translate_stats,
 			'warn'      => $translate_errors,
 			'locale'    => $target_locale,
 		];
 		$this->record_distribution( $post_id, $site, $target_locale, $r, $translate_stats, (int) round( ( microtime( true ) - $started ) * 1000 ), $basepayload );
+		$this->refresh_lang_map( $post_id, $basepayload, $site, $target_locale, $r );
 		return $r;
 	}
 
