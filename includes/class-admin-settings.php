@@ -40,6 +40,7 @@ class Heb_Product_Publisher_Admin_Settings {
 		add_action( 'admin_init', [ $this, 'register_settings' ] );
 		add_action( 'admin_menu', [ $this, 'add_menu' ] );
 		add_action( 'admin_post_heb_pp_check_updates', [ $this, 'handle_check_updates' ] );
+		add_action( 'admin_bar_menu', [ $this, 'add_admin_bar_check_updates' ], 90 );
 	}
 
 	/**
@@ -156,15 +157,23 @@ class Heb_Product_Publisher_Admin_Settings {
 		check_admin_referer( 'heb_pp_check_updates' );
 
 		Heb_Product_Publisher_Updater::purge_cache();
+		delete_site_transient( 'update_themes' );
+
+		if ( ! function_exists( 'wp_update_plugins' ) || ! function_exists( 'wp_update_themes' ) ) {
+			require_once ABSPATH . 'wp-includes/update.php';
+		}
+		wp_update_plugins();
+		wp_update_themes();
+
 		$info = Heb_Product_Publisher_Updater::instance()->get_release( true );
 
 		$msg = $info && ! empty( $info['version'] )
 			? sprintf(
 				/* translators: %s: remote version */
-				__( '最新 Release 版本为 %s。', 'heb-product-publisher' ),
+				__( '已触发插件+主题更新检查。插件最新 Release 版本为 %s。', 'heb-product-publisher' ),
 				$info['version']
 			)
-			: __( '无法获取更新信息，请检查 GitHub 仓库配置或 Token。', 'heb-product-publisher' );
+			: __( '已触发插件+主题更新检查；但插件 Release 信息获取失败，请检查 GitHub 仓库配置或 Token。', 'heb-product-publisher' );
 
 		wp_safe_redirect(
 			add_query_arg(
@@ -173,6 +182,28 @@ class Heb_Product_Publisher_Admin_Settings {
 			)
 		);
 		exit;
+	}
+
+	/**
+	 * 在顶部管理条加“一键检查插件+主题更新”入口。
+	 *
+	 * @param \WP_Admin_Bar $admin_bar Admin bar instance.
+	 */
+	public function add_admin_bar_check_updates( $admin_bar ) {
+		if ( ! is_admin_bar_showing() || ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		$href = wp_nonce_url( admin_url( 'admin-post.php?action=heb_pp_check_updates' ), 'heb_pp_check_updates' );
+		$admin_bar->add_node(
+			[
+				'id'    => 'heb-pp-check-all-updates',
+				'title' => esc_html__( '检查插件+主题更新', 'heb-product-publisher' ),
+				'href'  => $href,
+				'meta'  => [
+					'title' => esc_attr__( '一键触发 WordPress 插件和主题更新检查', 'heb-product-publisher' ),
+				],
+			]
+		);
 	}
 
 	/**
@@ -419,7 +450,7 @@ class Heb_Product_Publisher_Admin_Settings {
 							<code><?php echo esc_html( HEB_PP_VERSION ); ?></code>
 							&nbsp;·&nbsp;
 							<a class="button" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=heb_pp_check_updates' ), 'heb_pp_check_updates' ) ); ?>">
-								<?php esc_html_e( '立即检查更新', 'heb-product-publisher' ); ?>
+								<?php esc_html_e( '立即检查更新（插件+主题）', 'heb-product-publisher' ); ?>
 							</a>
 							&nbsp;·&nbsp;
 							<a href="<?php echo esc_url( admin_url( 'plugins.php' ) ); ?>"><?php esc_html_e( '打开「插件」页', 'heb-product-publisher' ); ?></a>
