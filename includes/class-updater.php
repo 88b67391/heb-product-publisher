@@ -119,6 +119,10 @@ class Heb_Product_Publisher_Updater {
 			foreach ( $json['assets'] as $asset ) {
 				$name = isset( $asset['name'] ) ? (string) $asset['name'] : '';
 				$url  = isset( $asset['browser_download_url'] ) ? (string) $asset['browser_download_url'] : '';
+				if ( '' !== $token && isset( $asset['url'] ) && is_string( $asset['url'] ) ) {
+					// 私有仓库优先使用 API 资产地址，配合 Authorization + octet-stream 才稳定。
+					$url = (string) $asset['url'];
+				}
 				if ( '' !== $url && preg_match( '/\.zip$/i', $name ) ) {
 					$zip = $url;
 					break;
