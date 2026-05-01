@@ -303,7 +303,7 @@ class Heb_Product_Publisher_Updater {
 		if ( '' === $token ) {
 			return $reply;
 		}
-		if ( ! is_string( $package ) || false === strpos( $package, 'api.github.com' ) && false === strpos( $package, 'github.com' ) ) {
+		if ( ! is_string( $package ) || false === strpos( $package, 'api.github.com' ) ) {
 			return $reply;
 		}
 		if ( false === strpos( $package, self::SLUG ) && false === strpos( $package, '/repos/' . self::repo() . '/' ) && false === strpos( $package, '://' . self::repo() ) ) {
