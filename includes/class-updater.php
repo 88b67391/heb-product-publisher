@@ -101,36 +101,57 @@ class Heb_Product_Publisher_Updater {
 			'https://api.github.com/repos/' . $repo . '/releases/latest',
 			[ 'timeout' => 15, 'headers' => $headers ]
 		);
-		if ( is_wp_error( $response ) ) {
-			return null;
-		}
-		$code = (int) wp_remote_retrieve_response_code( $response );
-		if ( 200 !== $code ) {
-			set_transient( self::TRANSIENT_KEY, [ 'error' => 'HTTP ' . $code ], HOUR_IN_SECONDS );
+		if ( is_wp_error( $response ) || 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+			$tag = $this->get_latest_tag( $repo, $headers );
+			if ( '' !== $tag ) {
+				$info = [
+					'version'   => ltrim( $tag, 'vV' ),
+					'zip_url'   => 'https://api.github.com/repos/' . $repo . '/zipball/' . rawurlencode( $tag ),
+					'homepage'  => 'https://github.com/' . $repo . '/releases/tag/' . rawurlencode( $tag ),
+					'changelog' => '',
+					'published' => '',
+				];
+				set_transient( self::TRANSIENT_KEY, $info, 12 * HOUR_IN_SECONDS );
+				return $info;
+			}
 			return null;
 		}
 		$json = json_decode( (string) wp_remote_retrieve_body( $response ), true );
 		if ( ! is_array( $json ) || empty( $json['tag_name'] ) ) {
+			$tag = $this->get_latest_tag( $repo, $headers );
+			if ( '' !== $tag ) {
+				$info = [
+					'version'   => ltrim( $tag, 'vV' ),
+					'zip_url'   => 'https://api.github.com/repos/' . $repo . '/zipball/' . rawurlencode( $tag ),
+					'homepage'  => 'https://github.com/' . $repo . '/releases/tag/' . rawurlencode( $tag ),
+					'changelog' => '',
+					'published' => '',
+				];
+				set_transient( self::TRANSIENT_KEY, $info, 12 * HOUR_IN_SECONDS );
+				return $info;
+			}
 			return null;
 		}
 
+		$tag = (string) $json['tag_name'];
 		$zip = '';
-		if ( ! empty( $json['assets'] ) && is_array( $json['assets'] ) ) {
-			foreach ( $json['assets'] as $asset ) {
-				$name = isset( $asset['name'] ) ? (string) $asset['name'] : '';
-				$url  = isset( $asset['browser_download_url'] ) ? (string) $asset['browser_download_url'] : '';
-				if ( '' !== $token && isset( $asset['url'] ) && is_string( $asset['url'] ) ) {
-					// 私有仓库优先使用 API 资产地址，配合 Authorization + octet-stream 才稳定。
-					$url = (string) $asset['url'];
-				}
-				if ( '' !== $url && preg_match( '/\.zip$/i', $name ) ) {
-					$zip = $url;
-					break;
+		if ( '' !== $token ) {
+			// 私有仓库统一走 zipball/tag，避免 release asset 在某些环境 404。
+			$zip = 'https://api.github.com/repos/' . $repo . '/zipball/' . rawurlencode( $tag );
+		} else {
+			if ( ! empty( $json['assets'] ) && is_array( $json['assets'] ) ) {
+				foreach ( $json['assets'] as $asset ) {
+					$name = isset( $asset['name'] ) ? (string) $asset['name'] : '';
+					$url  = isset( $asset['browser_download_url'] ) ? (string) $asset['browser_download_url'] : '';
+					if ( '' !== $url && preg_match( '/\.zip$/i', $name ) ) {
+						$zip = $url;
+						break;
+					}
 				}
 			}
-		}
-		if ( '' === $zip && ! empty( $json['zipball_url'] ) ) {
-			$zip = (string) $json['zipball_url'];
+			if ( '' === $zip && ! empty( $json['zipball_url'] ) ) {
+				$zip = (string) $json['zipball_url'];
+			}
 		}
 
 		$info = [
@@ -143,6 +164,28 @@ class Heb_Product_Publisher_Updater {
 
 		set_transient( self::TRANSIENT_KEY, $info, 12 * HOUR_IN_SECONDS );
 		return $info;
+	}
+
+	/**
+	 * 获取最新 tag（release 不可用时兜底）。
+	 *
+	 * @param string               $repo    owner/repo.
+	 * @param array<string,string> $headers Request headers.
+	 * @return string
+	 */
+	private function get_latest_tag( $repo, array $headers ) {
+		$response = wp_remote_get(
+			'https://api.github.com/repos/' . $repo . '/tags?per_page=1',
+			[ 'timeout' => 15, 'headers' => $headers ]
+		);
+		if ( is_wp_error( $response ) || 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+			return '';
+		}
+		$tags = json_decode( (string) wp_remote_retrieve_body( $response ), true );
+		if ( ! is_array( $tags ) || empty( $tags[0]['name'] ) || ! is_string( $tags[0]['name'] ) ) {
+			return '';
+		}
+		return trim( $tags[0]['name'] );
 	}
 
 	/**
@@ -276,11 +319,23 @@ class Heb_Product_Publisher_Updater {
 			300,
 			false,
 			[
-				'Authorization' => 'Bearer ' . $token,
+				'Authorization' => 'token ' . $token,
 				'User-Agent'    => 'heb-product-publisher-updater',
 				'Accept'        => 'application/octet-stream',
 			]
 		);
+		if ( is_wp_error( $tmp ) ) {
+			$tmp = download_url(
+				$package,
+				300,
+				false,
+				[
+					'Authorization' => 'Bearer ' . $token,
+					'User-Agent'    => 'heb-product-publisher-updater',
+					'Accept'        => 'application/octet-stream',
+				]
+			);
+		}
 		return $tmp;
 	}
 
