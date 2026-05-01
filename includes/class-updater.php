@@ -42,6 +42,7 @@ class Heb_Product_Publisher_Updater {
 
 	private function __construct() {
 		add_filter( 'pre_set_site_transient_update_plugins', [ $this, 'inject_update' ] );
+		add_filter( 'site_transient_update_plugins', [ $this, 'inject_update' ] );
 		add_filter( 'plugins_api', [ $this, 'plugins_api' ], 10, 3 );
 		add_filter( 'upgrader_source_selection', [ $this, 'fix_folder_name' ], 10, 4 );
 		add_filter( 'upgrader_pre_download', [ $this, 'authenticate_download' ], 10, 3 );
