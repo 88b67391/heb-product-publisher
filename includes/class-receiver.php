@@ -64,6 +64,62 @@ class Heb_Product_Publisher_Receiver {
 				'permission_callback' => '__return_true',
 			]
 		);
+		register_rest_route(
+			'heb-publisher/v1',
+			'/lookup-by-source',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ $this, 'rest_lookup_by_source' ],
+				'permission_callback' => '__return_true',
+			]
+		);
+	}
+
+	/**
+	 * Hub 在 import-product 因 cURL/Gateway timeout 失败时，调用这个端点
+	 * 反查目标站是否其实已经收到并创建了文章——避免显示"假失败"。
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function rest_lookup_by_source( $request ) {
+		$secret = self::get_secret();
+		if ( '' === $secret ) {
+			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		if ( ! $this->rate_limit_ok() ) {
+			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts. Try again later.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) ) {
+			$body = [];
+		}
+		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			$this->rate_limit_bump();
+			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		$post_type      = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : '';
+		$source_post_id = isset( $body['source_post_id'] ) ? (int) $body['source_post_id'] : 0;
+		$source_site    = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+		if ( '' === $post_type || $source_post_id <= 0 || '' === $source_site ) {
+			return new \WP_Error( 'heb_pub_bad_payload', __( 'Bad payload.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+		if ( ! in_array( $post_type, self::allowed_post_types(), true ) ) {
+			return new \WP_Error( 'heb_pub_forbidden_type', __( 'Post type is not allowed.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		$post_id = $this->find_by_source( $post_type, $source_post_id, $source_site );
+		if ( $post_id <= 0 ) {
+			return rest_ensure_response( [ 'found' => false ] );
+		}
+		return rest_ensure_response(
+			[
+				'found'     => true,
+				'post_id'   => $post_id,
+				'edit_url'  => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
+				'permalink' => (string) get_permalink( $post_id ),
+				'modified'  => (int) get_post_modified_time( 'U', true, $post_id ),
+			]
+		);
 	}
 
 	/**
@@ -484,6 +540,39 @@ class Heb_Product_Publisher_Receiver {
 	}
 
 	/**
+	 * 源 URL 与本地 attachment 的去重 meta key。
+	 */
+	const META_SIDELOAD_SRC = '_heb_pp_sideload_src';
+
+	/**
+	 * 按源 URL 查找已 sideload 过的 attachment（避免重复下载/生成媒体库垃圾）。
+	 *
+	 * @param string $url 源 URL.
+	 * @return int Attachment ID 或 0.
+	 */
+	private function find_sideloaded_attachment( $url ) {
+		if ( ! is_string( $url ) || '' === $url ) {
+			return 0;
+		}
+		$q = get_posts(
+			[
+				'post_type'      => 'attachment',
+				'post_status'    => 'inherit',
+				'posts_per_page' => 1,
+				'fields'         => 'ids',
+				'no_found_rows'  => true,
+				'meta_query'     => [
+					[
+						'key'   => self::META_SIDELOAD_SRC,
+						'value' => $url,
+					],
+				],
+			]
+		);
+		return ! empty( $q ) ? (int) $q[0] : 0;
+	}
+
+	/**
 	 * @param string $url Image URL.
 	 * @return int Attachment ID or 0.
 	 */
@@ -497,6 +586,12 @@ class Heb_Product_Publisher_Receiver {
 		}
 		if ( ! $this->is_safe_remote_url( $url ) ) {
 			return 0;
+		}
+
+		// 去重：源 URL 已 sideload 过则直接复用，避免媒体库重复堆积。
+		$existing = $this->find_sideloaded_attachment( $url );
+		if ( $existing > 0 ) {
+			return $existing;
 		}
 
 		require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -524,6 +619,7 @@ class Heb_Product_Publisher_Receiver {
 			@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 			return 0;
 		}
+		update_post_meta( (int) $id, self::META_SIDELOAD_SRC, $url );
 		return (int) $id;
 	}
 

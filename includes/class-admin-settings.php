@@ -286,6 +286,10 @@ class Heb_Product_Publisher_Admin_Settings {
 			if ( ! in_array( $strategy, [ 'source', 'localized' ], true ) ) {
 				$strategy = 'localized';
 			}
+			$timeout = isset( $row['timeout'] ) ? (int) $row['timeout'] : 0;
+			if ( $timeout < 30 || $timeout > 600 ) {
+				$timeout = 0;
+			}
 			$id     = isset( $row['id'] ) && is_string( $row['id'] ) && '' !== $row['id']
 				? preg_replace( '/[^a-z0-9]/', '', strtolower( $row['id'] ) )
 				: '';
@@ -305,9 +309,24 @@ class Heb_Product_Publisher_Admin_Settings {
 				'receiver_secret' => $secret,
 				'locale_override' => (string) $locale,
 				'slug_strategy'   => $strategy,
+				'timeout'         => $timeout,
 			];
 		}
 		return $out;
+	}
+
+	/**
+	 * 远端站点的 import-product 请求超时秒数；0/未设 → 默认。
+	 *
+	 * @param array<string,mixed> $site Site row.
+	 * @return int
+	 */
+	public static function site_timeout( array $site ) {
+		$t = isset( $site['timeout'] ) ? (int) $site['timeout'] : 0;
+		if ( $t < 30 || $t > 600 ) {
+			return 180;
+		}
+		return $t;
 	}
 
 	public function add_menu() {
@@ -445,12 +464,13 @@ class Heb_Product_Publisher_Admin_Settings {
 							<th><?php esc_html_e( '接收密钥', 'heb-product-publisher' ); ?></th>
 							<th style="width:120px"><?php esc_html_e( '目标语言（可选）', 'heb-product-publisher' ); ?></th>
 							<th style="width:160px"><?php esc_html_e( 'Slug 策略', 'heb-product-publisher' ); ?></th>
+							<th style="width:90px"><?php esc_html_e( '超时（秒）', 'heb-product-publisher' ); ?></th>
 							<th style="width:80px"></th>
 						</tr>
 					</thead>
 					<tbody id="heb-pp-sites-body">
 						<?php if ( empty( $sites ) ) : ?>
-							<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '', 'slug_strategy' => 'localized' ], 0 ); ?>
+							<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '', 'slug_strategy' => 'localized', 'timeout' => 0 ], 0 ); ?>
 						<?php else : ?>
 							<?php foreach ( $sites as $i => $site ) : ?>
 								<?php $this->render_site_row( $site, $i ); ?>
@@ -547,7 +567,7 @@ class Heb_Product_Publisher_Admin_Settings {
 			</form>
 
 			<template id="heb-pp-site-row-tpl">
-				<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '', 'slug_strategy' => 'localized' ], '__INDEX__' ); ?>
+				<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '', 'slug_strategy' => 'localized', 'timeout' => 0 ], '__INDEX__' ); ?>
 			</template>
 		</div>
 		<?php
@@ -586,6 +606,21 @@ class Heb_Product_Publisher_Admin_Settings {
 				</select>
 				<p class="description" style="margin:4px 0 0;font-size:11px;">
 					<?php esc_html_e( '"本地化"：目标站根据翻译后标题生成 slug（SEO 更友好）；"源站"：保持英文 URL。', 'heb-product-publisher' ); ?>
+				</p>
+			</td>
+			<td>
+				<input
+					type="number"
+					name="<?php echo esc_attr( $base ); ?>[timeout]"
+					value="<?php echo esc_attr( isset( $site['timeout'] ) && (int) $site['timeout'] > 0 ? (int) $site['timeout'] : '' ); ?>"
+					placeholder="180"
+					min="30"
+					max="600"
+					step="10"
+					class="small-text"
+				/>
+				<p class="description" style="margin:4px 0 0;font-size:11px;">
+					<?php esc_html_e( '默认 180s；图片多的内容可调到 300', 'heb-product-publisher' ); ?>
 				</p>
 			</td>
 			<td>

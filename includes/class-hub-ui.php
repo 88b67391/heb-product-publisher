@@ -332,6 +332,34 @@ class Heb_Product_Publisher_Hub_UI {
 	}
 
 	/**
+	 * 反查远端站点是否已存在源站 post 对应的文章（用于把"超时假失败"识别成成功）。
+	 *
+	 * @param array<string,string> $site Site config.
+	 * @param string               $post_type Post type.
+	 * @param int                  $source_post_id Source post id.
+	 * @param string               $source_site Source site host.
+	 * @return array<string,mixed>|null
+	 */
+	private function probe_remote_post( array $site, $post_type, $source_post_id, $source_site ) {
+		if ( '' === $post_type || $source_post_id <= 0 || '' === $source_site ) {
+			return null;
+		}
+		// 等远端把同步收尾（sideload + ACF）跑完，再去查一次。
+		sleep( 2 );
+		$res = Heb_Product_Publisher_Remote_Client::post(
+			$site,
+			'/lookup-by-source',
+			[
+				'post_type'      => $post_type,
+				'source_post_id' => $source_post_id,
+				'source_site'    => $source_site,
+			],
+			15
+		);
+		return is_wp_error( $res ) ? null : (array) $res;
+	}
+
+	/**
 	 * @param string $locale Locale string.
 	 * @return string
 	 */
@@ -479,8 +507,33 @@ class Heb_Product_Publisher_Hub_UI {
 			$translate_stats  = isset( $tr['stats'] ) ? $tr['stats'] : [];
 		}
 
-		$push = Heb_Product_Publisher_Remote_Client::post( $site, '/import-product', $payload, 60 );
+		$import_timeout = Heb_Product_Publisher_Admin_Settings::site_timeout( $site );
+		$push           = Heb_Product_Publisher_Remote_Client::post( $site, '/import-product', $payload, $import_timeout );
 		if ( is_wp_error( $push ) ) {
+			// cURL 超时常见于目标站还在 sideload 图片 / 处理 ACF——文章可能其实已创建。
+			// 反查 /lookup-by-source 救回这种"假失败"。
+			$probe = $this->probe_remote_post( $site, (string) $basepayload['post_type'], (int) $basepayload['source_post_id'], (string) $basepayload['source_site'] );
+			if ( is_array( $probe ) && ! empty( $probe['found'] ) ) {
+				$r = [
+					'ok'        => true,
+					'post_id'   => isset( $probe['post_id'] ) ? (int) $probe['post_id'] : 0,
+					'edit_url'  => isset( $probe['edit_url'] ) ? (string) $probe['edit_url'] : '',
+					'permalink' => isset( $probe['permalink'] ) ? (string) $probe['permalink'] : '',
+					'created'   => false, // 反查不知道是新建还是更新，这里保守
+					'translate' => $translate_stats,
+					'warn'      => array_merge( $translate_errors, [
+						sprintf(
+							/* translators: %s: error */
+							__( 'HTTP 阶段失败（%s），但反查确认远端已写入；本次按"成功"记账。建议把该站超时调大。', 'heb-product-publisher' ),
+							$push->get_error_message()
+						),
+					] ),
+					'locale'    => $target_locale,
+				];
+				$this->record_distribution( $post_id, $site, $target_locale, $r, $translate_stats, (int) round( ( microtime( true ) - $started ) * 1000 ), $basepayload );
+				$this->refresh_lang_map( $post_id, $basepayload, $site, $target_locale, $r );
+				return $r;
+			}
 			$r = [
 				'ok'        => false,
 				'message'   => $push->get_error_message(),
