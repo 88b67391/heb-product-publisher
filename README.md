@@ -6,16 +6,37 @@
 
 ## 功能
 
-- 主站后台在产品编辑页选中多个目标站点一键分发。
+- 主站后台在产品/解决方案编辑页选中多个目标站点一键分发。
+- 默认支持的 post type：`products`、`solutions`（hierarchical CPT 的父级关系会自动跨站重映射，前提是父级也已分发）；可通过 filter `heb_pp_distributable_post_types` 扩展。
 - 实时拉取目标站点的语言（locale）与分类（taxonomies/terms）。
 - 每个目标站可独立勾选目标分类（支持预选匹配 + 全选/全不选）。
 - 通过 OpenRouter 自动把标题、正文、摘要、ACF 文本翻译到目标语言；
   - 保留 HTML / URL / 数字 / 日期 / 型号编码 / ACF 选项键。
 - 目标站 `/import-product` 接口：幂等（source_post_id + source_site）、缺失的 term slug 自动创建。
 - **Hreflang 多语言 SEO 标签**：
-  - 产品页：分发流程自动维护 `_heb_pp_lang_map`，前台 `<head>` 自动输出整组 `<link rel="alternate" hreflang="...">` + `x-default`，且全站双向。
+  - 产品/方案页：分发流程自动维护 `_heb_pp_lang_map`，前台 `<head>` 自动输出整组 `<link rel="alternate" hreflang="...">` + `x-default`，且全站双向。
   - 页面/文章：在编辑界面右侧「跨语言版本（hreflang）」meta box 里手动填入各语言 URL，与产品复用同一份渲染器。
 - 插件自带 GitHub Releases 自更新机制。
+
+## 安全机制
+
+- **共享密钥**：Hub 与 Receiver 通过预共享 `secret` 校验，比较使用 `hash_equals` 防时序攻击。
+- **Post type 白名单**：Receiver 只接受 `heb_pp_distributable_post_types()` 列表内的 CPT，可用 filter `heb_pp_receiver_allowed_post_types` 显式扩展。即使 secret 泄露，攻击者也无法写入 `page`/`post` 等非白名单 CPT。
+- **ACF key 校验**：写入端拒绝以 `_` 开头或不符合 `^[A-Za-z][A-Za-z0-9_\-]{0,63}$` 的字段名，防止通过 ACF 通道污染 WP 内部 protected meta。
+- **SSRF 防护**：图片 sideload 时拒绝 localhost / 回环 / 169.254.169.254（云元数据） / 10/8 / 172.16/12 / 192.168/16 / IPv6 私网，仅允许公网 http(s) 资源。
+- **限速**：同一 IP 连续 30 次 secret 校验失败后，5 分钟内拒绝新请求，防止穷举。
+- **建议**：把 `HEB_PUBLISHER_RECEIVER_SECRET`、`HEB_PP_OPENROUTER_API_KEY` 放到 `wp-config.php` 而不是 DB option，并强制 HTTPS。
+
+## 上线 checklist
+
+- [ ] 每个站点都安装并启用同一份本插件，版本一致。
+- [ ] 每个站点都注册了 `products` + `solutions` 这两个 CPT 和对应 taxonomy（slug 完全一致）。
+- [ ] 所有站点 ACF 字段组的 **field name / key / type / choices.value** 与主站一致；本地化只翻译 label。
+- [ ] 各站 `HEB_PUBLISHER_RECEIVER_SECRET` 用强随机串（≥32 字符）并定义在 `wp-config.php`。
+- [ ] 主站 `HEB_PP_OPENROUTER_API_KEY` 已配置；测试模型可调用。
+- [ ] 主站后台「测试全部连接」对所有目标站均返回成功。
+- [ ] 主站设置「源语言（source_locale）」准确；hreflang `x-default` 已设置为主语言。
+- [ ] 全栈走 HTTPS。
 
 ## 安装
 

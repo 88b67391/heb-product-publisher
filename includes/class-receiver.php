@@ -67,6 +67,54 @@ class Heb_Product_Publisher_Receiver {
 	}
 
 	/**
+	 * 接收端允许写入的 post type 白名单。
+	 * 默认 = distributable 列表；可通过 filter `heb_pp_receiver_allowed_post_types`
+	 * 在子站显式扩展（例：[ 'products', 'solutions', 'post' ]）。
+	 *
+	 * @return array<int,string>
+	 */
+	public static function allowed_post_types() {
+		$base = function_exists( 'heb_pp_distributable_post_types' )
+			? heb_pp_distributable_post_types()
+			: [ 'products', 'solutions' ];
+		$pts  = (array) apply_filters( 'heb_pp_receiver_allowed_post_types', $base );
+		$out  = [];
+		foreach ( $pts as $pt ) {
+			if ( ! is_string( $pt ) ) {
+				continue;
+			}
+			$pt = sanitize_key( $pt );
+			if ( '' !== $pt ) {
+				$out[ $pt ] = true;
+			}
+		}
+		return array_keys( $out );
+	}
+
+	/**
+	 * 简易限速：同 secret 校验失败 N 次后短时间内拒绝（仅基于 transient，存活 5 分钟）。
+	 * 防止穷举 secret。
+	 *
+	 * @return bool true=请放行；false=已被限流。
+	 */
+	private function rate_limit_ok() {
+		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? preg_replace( '/[^a-fA-F0-9:.]/', '', (string) $_SERVER['REMOTE_ADDR'] ) : 'unknown';
+		$key = 'heb_pp_rl_' . md5( (string) $ip );
+		$n   = (int) get_transient( $key );
+		return $n < 30; // 5 分钟内最多 30 次失败
+	}
+
+	/**
+	 * 记录一次失败，用于限速。
+	 */
+	private function rate_limit_bump() {
+		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? preg_replace( '/[^a-fA-F0-9:.]/', '', (string) $_SERVER['REMOTE_ADDR'] ) : 'unknown';
+		$key = 'heb_pp_rl_' . md5( (string) $ip );
+		$n   = (int) get_transient( $key );
+		set_transient( $key, $n + 1, 5 * MINUTE_IN_SECONDS );
+	}
+
+	/**
 	 * @param \WP_REST_Request $request Request.
 	 * @return \WP_REST_Response|\WP_Error
 	 */
@@ -76,17 +124,25 @@ class Heb_Product_Publisher_Receiver {
 			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
 		}
 
+		if ( ! $this->rate_limit_ok() ) {
+			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts. Try again later.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
+
 		$body = $request->get_json_params();
 		if ( ! is_array( $body ) ) {
 			$body = [];
 		}
 		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			$this->rate_limit_bump();
 			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
 		}
 
-		$post_type = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : 'products';
-		if ( ! post_type_exists( $post_type ) ) {
+		$post_type = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : '';
+		if ( '' === $post_type || ! post_type_exists( $post_type ) ) {
 			return new \WP_Error( 'heb_pub_bad_type', __( 'Post type does not exist.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+		if ( ! in_array( $post_type, self::allowed_post_types(), true ) ) {
+			return new \WP_Error( 'heb_pub_forbidden_type', __( 'Post type is not allowed for import.', 'heb-product-publisher' ), [ 'status' => 403 ] );
 		}
 
 		$title         = isset( $body['title'] ) ? sanitize_text_field( (string) $body['title'] ) : '';
@@ -150,6 +206,15 @@ class Heb_Product_Publisher_Receiver {
 			'post_type'    => $post_type,
 		];
 
+		if ( is_post_type_hierarchical( $post_type ) ) {
+			$source_parent_id = isset( $body['source_parent_id'] ) ? (int) $body['source_parent_id'] : 0;
+			$local_parent     = 0;
+			if ( $source_parent_id > 0 && '' !== $source_site ) {
+				$local_parent = $this->find_by_source( $post_type, $source_parent_id, $source_site );
+			}
+			$postarr['post_parent'] = $local_parent > 0 ? $local_parent : 0;
+		}
+
 		if ( $existing_id > 0 ) {
 			$postarr['ID'] = $existing_id;
 			$post_id       = wp_update_post( wp_slash( $postarr ), true );
@@ -186,9 +251,18 @@ class Heb_Product_Publisher_Receiver {
 		if ( ! empty( $body['acf'] ) && is_array( $body['acf'] ) && function_exists( 'update_field' ) ) {
 			$acf = $this->decode_acf_from_transport( $body['acf'] );
 			foreach ( $acf as $key => $value ) {
-				if ( is_string( $key ) && '' !== $key ) {
-					update_field( $key, $value, $post_id );
+				if ( ! is_string( $key ) || '' === $key ) {
+					continue;
 				}
+				// 禁止覆盖 WP/插件保留的 meta（以 _ 开头）以及非常规 key，
+				// 防止 secret 泄露后通过 ACF 通道写入任意 protected meta。
+				if ( '_' === $key[0] ) {
+					continue;
+				}
+				if ( ! preg_match( '/^[A-Za-z][A-Za-z0-9_\-]{0,63}$/', $key ) ) {
+					continue;
+				}
+				update_field( $key, $value, $post_id );
 			}
 		}
 
@@ -228,20 +302,27 @@ class Heb_Product_Publisher_Receiver {
 		if ( '' === $secret ) {
 			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
 		}
+		if ( ! $this->rate_limit_ok() ) {
+			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts. Try again later.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
 		$body = $request->get_json_params();
 		if ( ! is_array( $body ) ) {
 			$body = [];
 		}
 		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			$this->rate_limit_bump();
 			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
 		}
-		$post_type      = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : 'products';
+		$post_type      = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : '';
 		$source_post_id = isset( $body['source_post_id'] ) ? (int) $body['source_post_id'] : 0;
 		$source_site    = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
 		$lang_map       = isset( $body['lang_map'] ) && is_array( $body['lang_map'] ) ? $this->sanitize_lang_map( $body['lang_map'] ) : [];
 
-		if ( ! post_type_exists( $post_type ) || $source_post_id <= 0 || '' === $source_site ) {
+		if ( '' === $post_type || ! post_type_exists( $post_type ) || $source_post_id <= 0 || '' === $source_site ) {
 			return new \WP_Error( 'heb_pub_bad_payload', __( 'Bad payload.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+		if ( ! in_array( $post_type, self::allowed_post_types(), true ) ) {
+			return new \WP_Error( 'heb_pub_forbidden_type', __( 'Post type is not allowed for import.', 'heb-product-publisher' ), [ 'status' => 403 ] );
 		}
 		$post_id = $this->find_by_source( $post_type, $source_post_id, $source_site );
 		if ( $post_id <= 0 ) {
@@ -362,6 +443,47 @@ class Heb_Product_Publisher_Receiver {
 	}
 
 	/**
+	 * 判断 URL 是否指向公共 IP / 公网域名。拒绝：
+	 *  - 非 http/https
+	 *  - localhost / loopback / link-local / 私网（10/8、172.16/12、192.168/16）
+	 *  - IPv6 ::1 / fc00::/7 / fe80::/10
+	 *  - 云元数据地址 169.254.169.254 / metadata.google.internal
+	 *
+	 * @param string $url URL.
+	 * @return bool
+	 */
+	private function is_safe_remote_url( $url ) {
+		$parts = wp_parse_url( $url );
+		if ( ! is_array( $parts ) || empty( $parts['scheme'] ) || empty( $parts['host'] ) ) {
+			return false;
+		}
+		$scheme = strtolower( (string) $parts['scheme'] );
+		if ( 'http' !== $scheme && 'https' !== $scheme ) {
+			return false;
+		}
+		$host = strtolower( (string) $parts['host'] );
+
+		$blocked_hosts = [ 'localhost', 'metadata.google.internal', 'metadata' ];
+		if ( in_array( $host, $blocked_hosts, true ) ) {
+			return false;
+		}
+
+		$ip = filter_var( $host, FILTER_VALIDATE_IP ) ? $host : gethostbyname( $host );
+		if ( ! filter_var( $ip, FILTER_VALIDATE_IP ) ) {
+			return false;
+		}
+
+		if ( '169.254.169.254' === $ip ) {
+			return false;
+		}
+
+		if ( ! filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE ) ) {
+			return false;
+		}
+		return true;
+	}
+
+	/**
 	 * @param string $url Image URL.
 	 * @return int Attachment ID or 0.
 	 */
@@ -371,6 +493,9 @@ class Heb_Product_Publisher_Receiver {
 		}
 		$url = esc_url_raw( $url );
 		if ( ! wp_http_validate_url( $url ) ) {
+			return 0;
+		}
+		if ( ! $this->is_safe_remote_url( $url ) ) {
 			return 0;
 		}
 

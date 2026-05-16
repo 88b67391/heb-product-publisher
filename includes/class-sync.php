@@ -112,20 +112,21 @@ class Heb_Product_Publisher_Sync {
 		$acf = self::encode_acf_for_transport( self::get_acf_raw( $post_id ) );
 
 		return [
-			'post_type'      => $post->post_type,
-			'title'          => $post->post_title,
-			'slug'           => $post->post_name,
-			'content'        => $post->post_content,
-			'excerpt'        => $post->post_excerpt,
-			'status'         => $post->post_status,
-			'featured_url'   => $feat_url ? (string) $feat_url : '',
-			'acf'            => $acf,
-			'taxonomies'     => self::get_term_slugs_map( $post_id ),
-			'seo'            => self::get_seo_meta( $post_id ),
-			'source_post_id' => (int) $post_id,
-			'source_site'    => wp_parse_url( home_url(), PHP_URL_HOST ),
-			'source_locale'  => Heb_Product_Publisher_Admin_Settings::source_locale(),
-			'source_modified' => (int) get_post_modified_time( 'U', true, $post_id ),
+			'post_type'        => $post->post_type,
+			'title'            => $post->post_title,
+			'slug'             => $post->post_name,
+			'content'          => $post->post_content,
+			'excerpt'          => $post->post_excerpt,
+			'status'           => $post->post_status,
+			'featured_url'     => $feat_url ? (string) $feat_url : '',
+			'acf'              => $acf,
+			'taxonomies'       => self::get_term_slugs_map( $post_id ),
+			'seo'              => self::get_seo_meta( $post_id ),
+			'source_post_id'   => (int) $post_id,
+			'source_parent_id' => is_post_type_hierarchical( $post->post_type ) ? (int) $post->post_parent : 0,
+			'source_site'      => wp_parse_url( home_url(), PHP_URL_HOST ),
+			'source_locale'    => Heb_Product_Publisher_Admin_Settings::source_locale(),
+			'source_modified'  => (int) get_post_modified_time( 'U', true, $post_id ),
 		];
 	}
 

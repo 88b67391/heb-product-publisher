@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       HEB Product Publisher
  * Plugin URI:        https://github.com/88b67391/heb-product-publisher
- * Description:       一体化产品分发插件：同一插件在主站作为 Hub（翻译 + 分发），在语言站作为 Receiver（接收推送、暴露站点信息）。翻译通过 OpenRouter，升级通过 GitHub Releases 自动推送。2.3 新增 Yoast SEO 翻译；2.5 新增 hreflang 输出（产品自动 + 页面/文章手动映射）。
- * Version:           2.5.0
+ * Description:       一体化产品分发插件：同一插件在主站作为 Hub（翻译 + 分发），在语言站作为 Receiver（接收推送、暴露站点信息）。翻译通过 OpenRouter，升级通过 GitHub Releases 自动推送。2.3 新增 Yoast SEO 翻译；2.5 新增 hreflang 输出；2.6 默认支持 solutions + 安全加固（post type 白名单、ACF key 校验、SSRF 防护、限速）。
+ * Version:           2.6.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            HEB
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'HEB_PP_VERSION', '2.5.0' );
+define( 'HEB_PP_VERSION', '2.6.0' );
 define( 'HEB_PP_FILE', __FILE__ );
 define( 'HEB_PP_PATH', plugin_dir_path( __FILE__ ) );
 define( 'HEB_PP_URL', plugin_dir_url( __FILE__ ) );
@@ -32,12 +32,26 @@ register_activation_hook(
 );
 
 /**
- * 允许被分发的 post type，可通过过滤器 heb_pp_distributable_post_types 扩展。
+ * 允许被分发的 post type（默认 products + solutions），可通过过滤器
+ * `heb_pp_distributable_post_types` 扩展。返回值会被规范化为有效 slug
+ * 数组（清洗 + 去重 + 仅保留字符串）。
  *
  * @return array<int,string>
  */
 function heb_pp_distributable_post_types() {
-	return (array) apply_filters( 'heb_pp_distributable_post_types', [ 'products' ] );
+	$raw = (array) apply_filters( 'heb_pp_distributable_post_types', [ 'products', 'solutions' ] );
+	$out = [];
+	foreach ( $raw as $pt ) {
+		if ( ! is_string( $pt ) ) {
+			continue;
+		}
+		$pt = sanitize_key( $pt );
+		if ( '' === $pt ) {
+			continue;
+		}
+		$out[ $pt ] = true;
+	}
+	return array_keys( $out );
 }
 
 function heb_pp_load_textdomain() {

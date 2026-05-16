@@ -65,9 +65,17 @@ class Heb_Product_Publisher_Site_Info {
 			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
 		}
 
-		$post_type = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : 'products';
+		$allowed = Heb_Product_Publisher_Receiver::allowed_post_types();
+
+		$post_type = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : '';
+		if ( '' === $post_type ) {
+			$post_type = ! empty( $allowed ) ? (string) $allowed[0] : 'products';
+		}
 		if ( ! post_type_exists( $post_type ) ) {
 			return new \WP_Error( 'heb_pub_bad_type', __( 'Post type does not exist.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+		if ( ! in_array( $post_type, $allowed, true ) ) {
+			return new \WP_Error( 'heb_pub_forbidden_type', __( 'Post type is not allowed.', 'heb-product-publisher' ), [ 'status' => 403 ] );
 		}
 
 		$taxonomies = get_object_taxonomies( $post_type, 'objects' );
@@ -104,12 +112,14 @@ class Heb_Product_Publisher_Site_Info {
 
 		return rest_ensure_response(
 			[
-				'success'    => true,
-				'site_url'   => home_url( '/' ),
-				'home_host'  => wp_parse_url( home_url( '/' ), PHP_URL_HOST ),
-				'locale'     => get_locale(),
-				'post_type'  => $post_type,
-				'taxonomies' => $tax_out,
+				'success'                  => true,
+				'site_url'                 => home_url( '/' ),
+				'home_host'                => wp_parse_url( home_url( '/' ), PHP_URL_HOST ),
+				'locale'                   => get_locale(),
+				'post_type'                => $post_type,
+				'taxonomies'               => $tax_out,
+				'distributable_post_types' => $allowed,
+				'plugin_version'           => defined( 'HEB_PP_VERSION' ) ? HEB_PP_VERSION : '',
 			]
 		);
 	}

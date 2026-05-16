@@ -228,7 +228,12 @@ class Heb_Product_Publisher_Hub_UI {
 			wp_send_json_error( [ 'message' => __( '未找到站点。', 'heb-product-publisher' ) ], 404 );
 		}
 
-		$res = Heb_Product_Publisher_Remote_Client::post( $site, '/site-info', [ 'post_type' => 'products' ], 15 );
+		$default_pt = '';
+		$pts        = heb_pp_distributable_post_types();
+		if ( ! empty( $pts ) ) {
+			$default_pt = (string) $pts[0];
+		}
+		$res = Heb_Product_Publisher_Remote_Client::post( $site, '/site-info', [ 'post_type' => $default_pt ], 15 );
 		if ( is_wp_error( $res ) ) {
 			wp_send_json_error( [ 'message' => $res->get_error_message() ] );
 		}
