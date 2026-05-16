@@ -29,6 +29,8 @@ require_once __DIR__ . '/class-log.php';
 require_once __DIR__ . '/class-log-admin.php';
 require_once __DIR__ . '/class-product-columns.php';
 require_once __DIR__ . '/class-bulk.php';
+require_once __DIR__ . '/class-hreflang.php';
+require_once __DIR__ . '/class-page-lang-map.php';
 
 Heb_Product_Publisher_Receiver::instance();
 Heb_Product_Publisher_Site_Info::instance();
@@ -38,6 +40,8 @@ Heb_Product_Publisher_Updater::instance();
 Heb_Product_Publisher_Log_Admin::instance();
 Heb_Product_Publisher_Product_Columns::instance();
 Heb_Product_Publisher_Bulk::instance();
+Heb_Product_Publisher_Hreflang::instance();
+Heb_Product_Publisher_Page_Lang_Map::instance();
 
 // 兜底：首次启用后访问管理页自动建表。
 add_action(

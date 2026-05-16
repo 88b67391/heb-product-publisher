@@ -20,8 +20,11 @@ class Heb_Product_Publisher_Admin_Settings {
 	const OPT_OPENROUTER_MODEL = 'heb_pp_openrouter_model';
 	const OPT_REMOTE_SITES     = 'heb_pp_remote_sites';
 	const OPT_GITHUB_REPO      = 'heb_pp_github_repo';
+	const OPT_HREFLANG_ENABLED = 'heb_pp_hreflang_enabled';
+	const OPT_HREFLANG_XDEFAULT = 'heb_pp_hreflang_xdefault';
 
-	const DEFAULT_MODEL = 'openai/gpt-4o-mini';
+	const DEFAULT_MODEL              = 'openai/gpt-4o-mini';
+	const DEFAULT_HREFLANG_XDEFAULT  = 'en';
 
 	/** @var self|null */
 	private static $instance = null;
@@ -62,6 +65,30 @@ class Heb_Product_Publisher_Admin_Settings {
 	public static function openrouter_model() {
 		$v = get_option( self::OPT_OPENROUTER_MODEL, self::DEFAULT_MODEL );
 		return is_string( $v ) && '' !== $v ? $v : self::DEFAULT_MODEL;
+	}
+
+	/**
+	 * @return bool
+	 */
+	public static function hreflang_enabled() {
+		$v = get_option( self::OPT_HREFLANG_ENABLED, '1' );
+		return '1' === (string) $v;
+	}
+
+	/**
+	 * x-default 对应的 hreflang 语言代码（规范化后）。
+	 *
+	 * @return string
+	 */
+	public static function hreflang_xdefault_lang() {
+		$raw = (string) get_option( self::OPT_HREFLANG_XDEFAULT, self::DEFAULT_HREFLANG_XDEFAULT );
+		if ( '' === trim( $raw ) ) {
+			$raw = self::DEFAULT_HREFLANG_XDEFAULT;
+		}
+		if ( class_exists( 'Heb_Product_Publisher_Hreflang' ) ) {
+			return Heb_Product_Publisher_Hreflang::normalize_lang( $raw );
+		}
+		return strtolower( trim( $raw ) );
 	}
 
 	/**
@@ -129,6 +156,26 @@ class Heb_Product_Publisher_Admin_Settings {
 			'heb_pp_settings',
 			self::OPT_GITHUB_REPO,
 			[ 'type' => 'string', 'sanitize_callback' => [ $this, 'sanitize_github_repo' ], 'default' => '' ]
+		);
+		register_setting(
+			'heb_pp_settings',
+			self::OPT_HREFLANG_ENABLED,
+			[
+				'type'              => 'string',
+				'sanitize_callback' => static function ( $v ) {
+					return '1' === (string) $v ? '1' : '0';
+				},
+				'default'           => '1',
+			]
+		);
+		register_setting(
+			'heb_pp_settings',
+			self::OPT_HREFLANG_XDEFAULT,
+			[
+				'type'              => 'string',
+				'sanitize_callback' => [ $this, 'sanitize_locale' ],
+				'default'           => self::DEFAULT_HREFLANG_XDEFAULT,
+			]
 		);
 	}
 
@@ -294,6 +341,9 @@ class Heb_Product_Publisher_Admin_Settings {
 		$gh_repo         = (string) get_option( self::OPT_GITHUB_REPO, '' );
 		$gh_from_config  = defined( 'HEB_PP_GITHUB_REPO' ) && is_string( HEB_PP_GITHUB_REPO ) && '' !== HEB_PP_GITHUB_REPO;
 
+		$hreflang_on        = self::hreflang_enabled();
+		$hreflang_xdefault  = (string) get_option( self::OPT_HREFLANG_XDEFAULT, self::DEFAULT_HREFLANG_XDEFAULT );
+
 		?>
 		<div class="wrap heb-pp-settings">
 			<h1><?php esc_html_e( 'HEB Publisher', 'heb-product-publisher' ); ?></h1>
@@ -415,7 +465,42 @@ class Heb_Product_Publisher_Admin_Settings {
 				</p>
 				<div id="heb-pp-test-result" class="heb-pp-test-result" aria-live="polite"></div>
 
-				<h2 class="title"><?php esc_html_e( '④ 自动更新（GitHub Releases）', 'heb-product-publisher' ); ?></h2>
+				<h2 class="title"><?php esc_html_e( '④ Hreflang（多语言 SEO 标签）', 'heb-product-publisher' ); ?></h2>
+				<p class="description">
+					<?php esc_html_e( '在前台 <head> 输出 hreflang 标签。数据：产品由分发流程自动维护；页面/文章在编辑界面右侧"跨语言版本（hreflang）"中手动填写。', 'heb-product-publisher' ); ?>
+				</p>
+				<table class="form-table" role="presentation">
+					<tr>
+						<th scope="row"><?php esc_html_e( '启用 hreflang 输出', 'heb-product-publisher' ); ?></th>
+						<td>
+							<label>
+								<input
+									type="checkbox"
+									name="<?php echo esc_attr( self::OPT_HREFLANG_ENABLED ); ?>"
+									value="1"
+									<?php checked( $hreflang_on ); ?>
+								/>
+								<?php esc_html_e( '在前台单页面 <head> 输出 hreflang 标签', 'heb-product-publisher' ); ?>
+							</label>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row"><label for="heb_pp_hreflang_xdefault"><?php esc_html_e( 'x-default 语言代码', 'heb-product-publisher' ); ?></label></th>
+						<td>
+							<input
+								type="text"
+								id="heb_pp_hreflang_xdefault"
+								name="<?php echo esc_attr( self::OPT_HREFLANG_XDEFAULT ); ?>"
+								value="<?php echo esc_attr( $hreflang_xdefault ); ?>"
+								class="regular-text code"
+								placeholder="en"
+							/>
+							<p class="description"><?php esc_html_e( '搜索引擎未匹配到用户语言时回退到这个语言版本。一般填主站语言代码（如 en、zh-CN）。', 'heb-product-publisher' ); ?></p>
+						</td>
+					</tr>
+				</table>
+
+				<h2 class="title"><?php esc_html_e( '⑤ 自动更新（GitHub Releases）', 'heb-product-publisher' ); ?></h2>
 				<?php if ( isset( $_GET['heb_pp_update_check'] ) ) : ?>
 					<div class="notice notice-info inline"><p><?php echo esc_html( wp_unslash( (string) $_GET['heb_pp_update_check'] ) ); ?></p></div>
 				<?php endif; ?>

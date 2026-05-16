@@ -12,6 +12,9 @@
 - 通过 OpenRouter 自动把标题、正文、摘要、ACF 文本翻译到目标语言；
   - 保留 HTML / URL / 数字 / 日期 / 型号编码 / ACF 选项键。
 - 目标站 `/import-product` 接口：幂等（source_post_id + source_site）、缺失的 term slug 自动创建。
+- **Hreflang 多语言 SEO 标签**：
+  - 产品页：分发流程自动维护 `_heb_pp_lang_map`，前台 `<head>` 自动输出整组 `<link rel="alternate" hreflang="...">` + `x-default`，且全站双向。
+  - 页面/文章：在编辑界面右侧「跨语言版本（hreflang）」meta box 里手动填入各语言 URL，与产品复用同一份渲染器。
 - 插件自带 GitHub Releases 自更新机制。
 
 ## 安装
