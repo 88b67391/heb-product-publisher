@@ -84,17 +84,17 @@ class Heb_Product_Publisher_Page_Lang_Map {
 		// 收集面板里要展示的语言：远端站点 locale + source_locale + 已存自定义键。
 		$rows = [];
 
-		// 源站语言（主站才有意义；其他站也允许显示）。
-		$src_locale = Heb_Product_Publisher_Admin_Settings::source_locale();
-		$src_lang   = Heb_Product_Publisher_Hreflang::normalize_lang( $src_locale );
-		if ( '' !== $src_lang ) {
-			$rows[ $src_lang ] = [
+		// 本站语言 = WordPress 设置里的站点语言（不是 source_locale，避免子站从主站克隆时误读）。
+		$site_locale = (string) get_locale();
+		$site_lang   = Heb_Product_Publisher_Hreflang::normalize_lang( $site_locale );
+		if ( '' !== $site_lang ) {
+			$rows[ $site_lang ] = [
 				'label'   => sprintf(
 					/* translators: %s: locale code */
 					__( '本站语言（%s）', 'heb-product-publisher' ),
-					$src_locale
+					$site_locale
 				),
-				'value'   => isset( $stored[ $src_lang ] ) ? (string) $stored[ $src_lang ] : (string) get_permalink( $post ),
+				'value'   => isset( $stored[ $site_lang ] ) ? (string) $stored[ $site_lang ] : (string) get_permalink( $post ),
 				'builtin' => true,
 			];
 		}

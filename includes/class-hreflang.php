@@ -122,19 +122,21 @@ class Heb_Product_Publisher_Hreflang {
 	/**
 	 * 当前 WP 站点对应的 hreflang 语言代码。
 	 *
-	 * 主站使用插件里设置的 source_locale；其他情况退回 get_locale()。
+	 * 始终以 WordPress 站点语言（设置 → 常规 → 站点语言）为准——
+	 * 这才是站点对外呈现给用户的真实语言；插件里"源语言（source_locale）"
+	 * 是主站翻译流程用的字段，跟当前站点的 hreflang 没关系，否则克隆站点
+	 * 时一并复制过来会导致子站误认成主站语言。
+	 *
+	 * 退路：get_locale() 为空时（极少见）才退回 source_locale。
 	 *
 	 * @return string
 	 */
 	public static function current_site_lang() {
-		$src    = '';
-		if ( class_exists( 'Heb_Product_Publisher_Admin_Settings' ) ) {
-			$src = Heb_Product_Publisher_Admin_Settings::source_locale();
+		$loc = (string) get_locale();
+		if ( '' === $loc && class_exists( 'Heb_Product_Publisher_Admin_Settings' ) ) {
+			$loc = Heb_Product_Publisher_Admin_Settings::source_locale();
 		}
-		if ( '' === $src ) {
-			$src = (string) get_locale();
-		}
-		return self::normalize_lang( $src );
+		return self::normalize_lang( $loc );
 	}
 
 	/**
