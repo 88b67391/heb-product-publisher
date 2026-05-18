@@ -37,19 +37,21 @@ class Heb_Product_Publisher_Page_Lang_Map {
 	}
 
 	/**
-	 * 默认 page / post。可通过过滤器扩展。可分发型（产品）由分发流程自动维护，无需此 UI。
+	 * 默认 page / post。可通过过滤器扩展。
+	 *
+	 * v3.0 起 distributable 类型也可以共用此 metabox 作为手填 fallback：
+	 *  - 分发流程会自动维护 _heb_pp_lang_map（包含子站 URL）
+	 *  - 但用户在主站 metabox 里看到的还是同一份数据，可以手动 override，比如
+	 *    指向外部托管页面、或者强制留空表示某语言无对应版本
 	 *
 	 * @return array<int,string>
 	 */
 	public static function supported_post_types() {
-		$pts          = (array) apply_filters( 'heb_pp_lang_map_post_types', [ 'page', 'post' ] );
-		$distributable = function_exists( 'heb_pp_distributable_post_types' )
-			? heb_pp_distributable_post_types()
-			: [];
+		$pts = (array) apply_filters( 'heb_pp_lang_map_post_types', [ 'page', 'post' ] );
 		$out = [];
 		foreach ( $pts as $pt ) {
 			$pt = sanitize_key( (string) $pt );
-			if ( '' === $pt || in_array( $pt, $distributable, true ) ) {
+			if ( '' === $pt ) {
 				continue;
 			}
 			if ( post_type_exists( $pt ) ) {

@@ -33,6 +33,7 @@ require_once __DIR__ . '/class-product-columns.php';
 require_once __DIR__ . '/class-bulk.php';
 require_once __DIR__ . '/class-hreflang.php';
 require_once __DIR__ . '/class-page-lang-map.php';
+require_once __DIR__ . '/class-post-lock.php';
 
 // 角色无关：任何站点都需要这些（hreflang 输出、设置 UI、更新检查、单页 hreflang 手填、日志查看）。
 Heb_Product_Publisher_Admin_Settings::instance();
@@ -41,10 +42,11 @@ Heb_Product_Publisher_Hreflang::instance();
 Heb_Product_Publisher_Page_Lang_Map::instance();
 Heb_Product_Publisher_Log_Admin::instance();
 
-// Receiver 模式：注册接收端 REST 路由 + /site-info。
+// Receiver 模式：注册接收端 REST 路由 + /site-info + 子站本地锁定 UI。
 if ( Heb_Product_Publisher_Admin_Settings::is_receiver_mode() ) {
 	Heb_Product_Publisher_Receiver::instance();
 	Heb_Product_Publisher_Site_Info::instance();
+	Heb_Product_Publisher_Post_Lock::instance();
 }
 
 // Hub 模式：分发 metabox、批量分发、产品列表列、source/translator 装载。

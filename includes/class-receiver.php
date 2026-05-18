@@ -239,6 +239,21 @@ class Heb_Product_Publisher_Receiver {
 			}
 		}
 
+		// 子站本地锁定：管理员显式标记不接受主站推送（避免本地手动修改被覆盖）。
+		if ( $existing_id > 0 && '1' === (string) get_post_meta( $existing_id, '_heb_pp_locked', true ) ) {
+			return rest_ensure_response(
+				[
+					'success'   => true,
+					'post_id'   => $existing_id,
+					'created'   => false,
+					'locked'    => true,
+					'message'   => __( '目标 post 已被本地锁定（_heb_pp_locked），跳过更新。', 'heb-product-publisher' ),
+					'edit_url'  => admin_url( 'post.php?post=' . $existing_id . '&action=edit' ),
+					'permalink' => get_permalink( $existing_id ),
+				]
+			);
+		}
+
 		// slug_strategy=localized 时：首次创建根据翻译后标题生成；更新时保留现有 slug，避免外链失效。
 		if ( 'localized' === $slug_strategy ) {
 			if ( $existing_id > 0 ) {
@@ -325,6 +340,8 @@ class Heb_Product_Publisher_Receiver {
 		if ( ! empty( $body['seo'] ) && is_array( $body['seo'] ) ) {
 			$this->apply_seo_meta( $post_id, $body['seo'] );
 		}
+
+		$this->apply_elementor_payload( $post_id, $body );
 
 		if ( $source_post_id > 0 ) {
 			update_post_meta( $post_id, '_heb_publisher_source_post_id', $source_post_id );
@@ -624,13 +641,39 @@ class Heb_Product_Publisher_Receiver {
 	}
 
 	/**
+	 * 递归 decode payload 中的图片 token，把 transport shape 还原为对应原生结构：
+	 *  - { __heb_media: image, __heb_url } → attachment ID（ACF image 兼容）
+	 *  - { __heb_media: elementor_image, __heb_url, __heb_alt, __heb_size, __heb_source }
+	 *    → { id, url, alt, source, size }（Elementor image 兼容）
+	 *
 	 * @param mixed $value Payload fragment.
 	 * @return mixed
 	 */
 	private function decode_acf_from_transport( $value ) {
-		if ( is_array( $value ) && isset( $value['__heb_media'], $value['__heb_url'] )
-			&& 'image' === $value['__heb_media'] && is_string( $value['__heb_url'] ) ) {
-			$id = $this->sideload_url( $value['__heb_url'] );
+		if ( is_array( $value ) && isset( $value['__heb_media'], $value['__heb_url'] ) && is_string( $value['__heb_url'] ) ) {
+			$kind = (string) $value['__heb_media'];
+			$id   = $this->sideload_url( $value['__heb_url'] );
+			if ( 'elementor_image' === $kind ) {
+				if ( $id > 0 ) {
+					$url = (string) wp_get_attachment_image_url( $id, 'full' );
+					return [
+						'id'     => (int) $id,
+						'url'    => '' !== $url ? $url : (string) $value['__heb_url'],
+						'alt'    => isset( $value['__heb_alt'] ) ? (string) $value['__heb_alt'] : '',
+						'source' => isset( $value['__heb_source'] ) && '' !== $value['__heb_source'] ? (string) $value['__heb_source'] : 'library',
+						'size'   => isset( $value['__heb_size'] ) ? (string) $value['__heb_size'] : '',
+					];
+				}
+				// Sideload 失败：保留远端 URL 作为外链兜底（Elementor 仍能渲染但无本地 attachment）。
+				return [
+					'id'     => '',
+					'url'    => (string) $value['__heb_url'],
+					'alt'    => isset( $value['__heb_alt'] ) ? (string) $value['__heb_alt'] : '',
+					'source' => isset( $value['__heb_source'] ) && '' !== $value['__heb_source'] ? (string) $value['__heb_source'] : 'library',
+					'size'   => isset( $value['__heb_size'] ) ? (string) $value['__heb_size'] : '',
+				];
+			}
+			// 默认 ACF image：返回 attachment ID（失败则空字符串）。
 			return $id > 0 ? $id : '';
 		}
 		if ( is_array( $value ) ) {
@@ -641,5 +684,68 @@ class Heb_Product_Publisher_Receiver {
 			return $out;
 		}
 		return $value;
+	}
+
+	/**
+	 * 写回 Elementor 数据 + 页面级设置 + 版本号；清 Elementor 渲染缓存。
+	 *
+	 * 关键点：
+	 *  - `_elementor_data` 在 WP 数据库存的是 JSON 字符串，必须 wp_slash 后再 update_post_meta
+	 *    （WP 内部会 unslash 一次，不 slash 就会丢反斜杠）
+	 *  - 写完后清缓存：清 `_elementor_css` post meta + Plugin::files_manager->clear_cache()
+	 *    确保前端立刻渲染新内容而不是旧 CSS
+	 *
+	 * @param int                  $post_id Target post id.
+	 * @param array<string,mixed>  $body    REST payload.
+	 */
+	private function apply_elementor_payload( $post_id, array $body ) {
+		$has_data = isset( $body['elementor_data'] ) && is_array( $body['elementor_data'] ) && ! empty( $body['elementor_data'] );
+
+		if ( $has_data ) {
+			$decoded_data = $this->decode_acf_from_transport( $body['elementor_data'] );
+			if ( ! is_array( $decoded_data ) ) {
+				$decoded_data = [];
+			}
+			$json = wp_json_encode( $decoded_data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+			if ( is_string( $json ) ) {
+				update_post_meta( $post_id, '_elementor_data', wp_slash( $json ) );
+			}
+		}
+
+		if ( isset( $body['elementor_page_settings'] ) && is_array( $body['elementor_page_settings'] ) ) {
+			$settings = $this->decode_acf_from_transport( $body['elementor_page_settings'] );
+			if ( is_array( $settings ) ) {
+				update_post_meta( $post_id, '_elementor_page_settings', $settings );
+			}
+		}
+
+		if ( ! empty( $body['elementor_version'] ) && is_string( $body['elementor_version'] ) ) {
+			update_post_meta( $post_id, '_elementor_version', sanitize_text_field( $body['elementor_version'] ) );
+		}
+		if ( ! empty( $body['elementor_edit_mode'] ) && is_string( $body['elementor_edit_mode'] ) ) {
+			update_post_meta( $post_id, '_elementor_edit_mode', sanitize_text_field( $body['elementor_edit_mode'] ) );
+		} elseif ( $has_data ) {
+			// 没传递 edit_mode 但有 data → 默认 'builder'，确保前端能用 Elementor 渲染。
+			update_post_meta( $post_id, '_elementor_edit_mode', 'builder' );
+		}
+		if ( ! empty( $body['elementor_template_type'] ) && is_string( $body['elementor_template_type'] ) ) {
+			update_post_meta( $post_id, '_elementor_template_type', sanitize_text_field( $body['elementor_template_type'] ) );
+		}
+
+		// 清缓存：写完 _elementor_data 后必须清 CSS 缓存，否则前端可能还在用旧版式。
+		if ( $has_data ) {
+			delete_post_meta( $post_id, '_elementor_css' );
+			if ( class_exists( '\\Elementor\\Plugin' ) ) {
+				try {
+					$plugin = \Elementor\Plugin::$instance;
+					if ( $plugin && isset( $plugin->files_manager ) && method_exists( $plugin->files_manager, 'clear_cache' ) ) {
+						$plugin->files_manager->clear_cache();
+					}
+				} catch ( \Throwable $e ) {
+					// Elementor 未启用或内部异常时忽略，不阻塞导入流程。
+					unset( $e );
+				}
+			}
+		}
 	}
 }

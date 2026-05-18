@@ -24,15 +24,37 @@ class Heb_Product_Publisher_Translator {
 	/**
 	 * 不翻译的 key（子字段名，无论嵌套多深）：标识、slug、数字 ID、颜色、图片 token 等。
 	 *
+	 * v3.0 起补充了 Elementor 内部字段（_id / _element_id / elType / widgetType / __globals__
+	 * / css_classes / anchor / html_tag / link_url / btn_link / background_video_link 等），
+	 * 避免给模型送 widget id / 枚举值 / 链接，浪费 token 也容易翻坏。
+	 *
 	 * @return array<int,string>
 	 */
 	public static function skip_keys() {
 		$keys = [
+			// 通用 ID / URL / 联系方式
 			'id', 'ID', 'slug', 'key', 'uid',
 			'email', 'phone', 'url', 'link', 'href', 'src',
 			'hash', 'token',
 			'review_date', 'review_rating',
-			'__heb_media', '__heb_url',
+			// HEB 内部传输 token
+			'__heb_media', '__heb_url', '__heb_alt', '__heb_size', '__heb_source',
+			// Elementor 内部标识
+			'_id', '_element_id', '_element_type', 'elType', 'widgetType',
+			'__globals__', 'globals',
+			'css_classes', 'anchor', 'html_tag',
+			'link_url', 'btn_link', 'menu_anchor',
+			'background_video_link', 'background_slideshow_gallery',
+			// Elementor 响应式 / 控件尺寸
+			'_inline_size', '_inline_size_tablet', '_inline_size_mobile',
+			'_column_size',
+			// Elementor 动画
+			'_animation', '_animation_delay', 'animation', 'animation_delay',
+			'hover_animation',
+			// Elementor 样式数值 / 颜色（CSS 值不需要翻）
+			'background_color', 'border_color',
+			'_padding', '_margin', '_border_width', '_border_radius',
+			'_z_index',
 		];
 		return (array) apply_filters( 'heb_pp_translator_skip_keys', $keys );
 	}
@@ -184,6 +206,11 @@ class Heb_Product_Publisher_Translator {
 		if ( preg_match( '/(_slug|_id|_url|_link|_email)$/i', $key ) ) {
 			return true;
 		}
+		// Elementor 控件后缀：_tablet / _mobile / _hover / _color / _typography / _shadow
+		// 这些都是样式控制不需要翻译；如果其文本内容确实需要翻（罕见），主键不带这些后缀依然会被翻到。
+		if ( preg_match( '/(_color|_typography|_shadow|_padding|_margin|_size|_position|_align|_animation|_transition|_border|_background|_overlay|_zoom|_opacity)(_(tablet|mobile|hover|active|focus|extra))?$/i', $key ) ) {
+			return true;
+		}
 		return false;
 	}
 
@@ -303,15 +330,16 @@ class Heb_Product_Publisher_Translator {
 	private function call_openrouter( array $batch, $src, $dst, $api_key ) {
 		$model = Heb_Product_Publisher_Admin_Settings::openrouter_model();
 
-		$system = "You are a professional translator specializing in B2B industrial product catalogs. "
+		$system = "You are a professional translator specializing in B2B industrial product catalogs and Elementor-based website content. "
 			. "Translate the string values of the given JSON object from {$src} to {$dst}. "
 			. "Rules: "
 			. "1) Output MUST be a single JSON object with exactly the same keys as the input; every input key must appear in the output. "
 			. "2) Preserve HTML tags, attributes, entities and whitespace exactly; only translate visible text nodes. "
-			. "3) Do NOT translate and KEEP verbatim: URLs, email addresses, numbers, measurements, dates, brand names, SKU/product codes (e.g. 108D/2, GRS, SD, FOB, T/T, L/C, D/P, D/A), file paths, CSS/HTML identifiers, placeholder tokens like {xxx}, %s, [tag], and Yoast SEO variables wrapped in double percent signs like %%title%%, %%sep%%, %%sitename%%, %%page%%, %%primary_category%%. "
-			. "4) If a value looks like an identifier/enum key (e.g. 'paypal', 'odm', 'oem', 'both', 'tt', 'lc'), keep it unchanged. "
-			. "5) Translate natural-language sentences, product descriptions and marketing copy into {$dst} using the appropriate professional industry terminology. "
-			. "6) Return ONLY the JSON object. No explanation, no markdown fences, no preamble.";
+			. "3) Do NOT translate and KEEP verbatim: URLs, email addresses, numbers, measurements, dates, brand names, SKU/product codes (e.g. 108D/2, GRS, SD, FOB, T/T, L/C, D/P, D/A), file paths, CSS/HTML identifiers, placeholder tokens like {xxx}, %s, [tag], WordPress shortcodes like [elementor-template id=\"xx\"] or [contact-form-7 ...], and Yoast SEO variables wrapped in double percent signs like %%title%%, %%sep%%, %%sitename%%, %%page%%, %%primary_category%%. "
+			. "4) If a value looks like an identifier/enum key (e.g. 'paypal', 'odm', 'oem', 'both', 'tt', 'lc', 'flex-start', 'center', 'auto', 'inherit', 'eager', 'lazy'), keep it unchanged. "
+			. "5) For Elementor widget settings: only translate user-visible text like 'title', 'subtitle', 'description', 'button_text', 'tab_title', 'placeholder', 'label', 'caption', 'tooltip', editor HTML content. Do NOT translate technical settings like animation names, alignment values, CSS class names, icon names. "
+			. "6) Translate natural-language sentences, product descriptions and marketing copy into {$dst} using the appropriate professional industry terminology. "
+			. "7) Return ONLY the JSON object. No explanation, no markdown fences, no preamble.";
 
 		$user = wp_json_encode( $batch, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 

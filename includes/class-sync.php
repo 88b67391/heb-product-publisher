@@ -13,9 +13,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Heb_Product_Publisher_Sync {
 
 	/**
-	 * 把 ACF 值里的附件 ID 转换为图片 URL token（远端 sideload 使用）。
+	 * 把 ACF / Elementor 数据里的附件引用转换为图片 URL token（远端 sideload 使用）。
 	 *
-	 * @param mixed $value 任意 ACF 值。
+	 * 识别两种 shape：
+	 *  - ACF image：纯 attachment ID（int 或 digit-string）
+	 *  - Elementor image：`{ id, url, alt?, source?, size? }` 整体节点（递归到该节点时整体转 token）
+	 *
+	 * @param mixed $value 任意值。
 	 * @return mixed
 	 */
 	public static function encode_acf_for_transport( $value ) {
@@ -34,6 +38,20 @@ class Heb_Product_Publisher_Sync {
 		}
 
 		if ( is_array( $value ) ) {
+			// Elementor image shape：{ id: int, url: string, alt?, source?, size? }
+			// 整个节点替换为 transport token，避免子节点被翻译器扫到。
+			if ( self::looks_like_elementor_image( $value ) ) {
+				$src_url = isset( $value['url'] ) ? (string) $value['url'] : '';
+				if ( '' !== $src_url ) {
+					return [
+						'__heb_media'  => 'elementor_image',
+						'__heb_url'    => $src_url,
+						'__heb_alt'    => isset( $value['alt'] ) ? (string) $value['alt'] : '',
+						'__heb_size'   => isset( $value['size'] ) ? (string) $value['size'] : '',
+						'__heb_source' => isset( $value['source'] ) && '' !== $value['source'] ? (string) $value['source'] : 'library',
+					];
+				}
+			}
 			$out = [];
 			foreach ( $value as $k => $v ) {
 				$out[ $k ] = self::encode_acf_for_transport( $v );
@@ -42,6 +60,69 @@ class Heb_Product_Publisher_Sync {
 		}
 
 		return $value;
+	}
+
+	/**
+	 * Elementor image 节点典型结构识别。
+	 * 必须同时具备 id 和 url；url 必须是 http(s) 开头。
+	 *
+	 * @param array<mixed,mixed> $value Node value.
+	 * @return bool
+	 */
+	private static function looks_like_elementor_image( array $value ) {
+		if ( ! isset( $value['id'], $value['url'] ) ) {
+			return false;
+		}
+		$url = $value['url'];
+		if ( ! is_string( $url ) || ! preg_match( '#^https?://#i', $url ) ) {
+			return false;
+		}
+		// id 必须看起来像 attachment ID 或者空字符串（来自 hover image 等可选项）。
+		$id = $value['id'];
+		if ( is_int( $id ) ) {
+			return true;
+		}
+		if ( is_string( $id ) && ( '' === $id || ctype_digit( $id ) ) ) {
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * 读取 Elementor 主体数据（`_elementor_data` post meta），转为 array 并把图片转 transport token。
+	 *
+	 * 返回结构：array<int, element>，每个 element 是 Elementor 的 section / column / widget。
+	 * 若 post 不是 Elementor 编辑或数据为空，返回空数组（Receiver 端会跳过）。
+	 *
+	 * @param int $post_id Post id.
+	 * @return array<int,mixed>
+	 */
+	public static function get_elementor_data( $post_id ) {
+		$raw = get_post_meta( $post_id, '_elementor_data', true );
+		if ( ! is_string( $raw ) || '' === $raw ) {
+			return [];
+		}
+		$decoded = json_decode( $raw, true );
+		if ( ! is_array( $decoded ) ) {
+			return [];
+		}
+		$encoded = self::encode_acf_for_transport( $decoded );
+		return is_array( $encoded ) ? $encoded : [];
+	}
+
+	/**
+	 * 读取 Elementor 页面级设置（`_elementor_page_settings`），不含媒体。
+	 *
+	 * @param int $post_id Post id.
+	 * @return array<string,mixed>
+	 */
+	public static function get_elementor_page_settings( $post_id ) {
+		$raw = get_post_meta( $post_id, '_elementor_page_settings', true );
+		if ( ! is_array( $raw ) ) {
+			return [];
+		}
+		$encoded = self::encode_acf_for_transport( $raw );
+		return is_array( $encoded ) ? $encoded : [];
 	}
 
 	/**
@@ -111,22 +192,33 @@ class Heb_Product_Publisher_Sync {
 
 		$acf = self::encode_acf_for_transport( self::get_acf_raw( $post_id ) );
 
+		$elementor_data     = self::get_elementor_data( $post_id );
+		$elementor_settings = self::get_elementor_page_settings( $post_id );
+		$elementor_version  = (string) get_post_meta( $post_id, '_elementor_version', true );
+		$elementor_edit_mode = (string) get_post_meta( $post_id, '_elementor_edit_mode', true );
+		$elementor_template_type = (string) get_post_meta( $post_id, '_elementor_template_type', true );
+
 		return [
-			'post_type'        => $post->post_type,
-			'title'            => $post->post_title,
-			'slug'             => $post->post_name,
-			'content'          => $post->post_content,
-			'excerpt'          => $post->post_excerpt,
-			'status'           => $post->post_status,
-			'featured_url'     => $feat_url ? (string) $feat_url : '',
-			'acf'              => $acf,
-			'taxonomies'       => self::get_term_slugs_map( $post_id ),
-			'seo'              => self::get_seo_meta( $post_id ),
-			'source_post_id'   => (int) $post_id,
-			'source_parent_id' => is_post_type_hierarchical( $post->post_type ) ? (int) $post->post_parent : 0,
-			'source_site'      => wp_parse_url( home_url(), PHP_URL_HOST ),
-			'source_locale'    => Heb_Product_Publisher_Admin_Settings::source_locale(),
-			'source_modified'  => (int) get_post_modified_time( 'U', true, $post_id ),
+			'post_type'              => $post->post_type,
+			'title'                  => $post->post_title,
+			'slug'                   => $post->post_name,
+			'content'                => $post->post_content,
+			'excerpt'                => $post->post_excerpt,
+			'status'                 => $post->post_status,
+			'featured_url'           => $feat_url ? (string) $feat_url : '',
+			'acf'                    => $acf,
+			'elementor_data'         => $elementor_data,
+			'elementor_page_settings' => $elementor_settings,
+			'elementor_version'      => $elementor_version,
+			'elementor_edit_mode'    => $elementor_edit_mode,
+			'elementor_template_type' => $elementor_template_type,
+			'taxonomies'             => self::get_term_slugs_map( $post_id ),
+			'seo'                    => self::get_seo_meta( $post_id ),
+			'source_post_id'         => (int) $post_id,
+			'source_parent_id'       => is_post_type_hierarchical( $post->post_type ) ? (int) $post->post_parent : 0,
+			'source_site'            => wp_parse_url( home_url(), PHP_URL_HOST ),
+			'source_locale'          => Heb_Product_Publisher_Admin_Settings::source_locale(),
+			'source_modified'        => (int) get_post_modified_time( 'U', true, $post_id ),
 		];
 	}
 
