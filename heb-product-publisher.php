@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       HEB Product Publisher
  * Plugin URI:        https://github.com/88b67391/heb-product-publisher
- * Description:       一体化产品分发插件：同一插件在主站作为 Hub（翻译 + 分发），在语言站作为 Receiver（接收推送、暴露站点信息）。翻译通过 OpenRouter，升级通过 GitHub Releases 自动推送。2.7 显式站点角色；3.0-alpha.1 单页 + Elementor；3.0-alpha.2 term 分发 + AI 本地化 slug + term archive hreflang + 旧 slug 301。
- * Version:           3.0.0-alpha.2
+ * Description:       一体化产品分发插件：同一插件在主站作为 Hub（翻译 + 分发），在语言站作为 Receiver（接收推送、暴露站点信息）。翻译通过 OpenRouter，升级通过 GitHub Releases 自动推送。2.7 显式站点角色；3.0-alpha.1 单页 + Elementor；3.0-alpha.2 term 分发；3.0-alpha.3 Site Bootstrap (Action Scheduler 异步一键开站)。
+ * Version:           3.0.0-alpha.3
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            HEB
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'HEB_PP_VERSION', '3.0.0-alpha.2' );
+define( 'HEB_PP_VERSION', '3.0.0-alpha.3' );
 define( 'HEB_PP_FILE', __FILE__ );
 define( 'HEB_PP_PATH', plugin_dir_path( __FILE__ ) );
 define( 'HEB_PP_URL', plugin_dir_url( __FILE__ ) );
@@ -28,6 +28,19 @@ register_activation_hook(
 	static function () {
 		require_once HEB_PP_PATH . 'includes/class-log.php';
 		Heb_Product_Publisher_Log::install();
+
+		// 提前建 Action Scheduler 数据表，避免首次 Bootstrap enqueue 时卡顿。
+		$as_main = HEB_PP_PATH . 'vendor/woocommerce/action-scheduler/action-scheduler.php';
+		if ( file_exists( $as_main ) ) {
+			require_once $as_main;
+			if ( class_exists( 'ActionScheduler' ) && method_exists( 'ActionScheduler', 'store' ) ) {
+				try {
+					ActionScheduler::store()->init();
+				} catch ( \Throwable $e ) {
+					unset( $e );
+				}
+			}
+		}
 	}
 );
 
@@ -105,5 +118,19 @@ function heb_pp_load_textdomain() {
 	load_plugin_textdomain( 'heb-product-publisher', false, dirname( plugin_basename( HEB_PP_FILE ) ) . '/languages' );
 }
 add_action( 'plugins_loaded', 'heb_pp_load_textdomain' );
+
+/**
+ * 载入 Action Scheduler 内置版（v3.0 起 Site Bootstrap 需要异步队列）。
+ *
+ * AS 用 self-registration：会自动选用版本最高的实例运行（如果 WooCommerce 已经
+ * 在用更新的版本，它就接管），所以多个插件同时 bundle 不会冲突。
+ *
+ * 必须在 `plugins_loaded` 前 require，因为 AS 自己注册的 hook 是 `init` 0。
+ */
+$heb_pp_as_main = HEB_PP_PATH . 'vendor/woocommerce/action-scheduler/action-scheduler.php';
+if ( file_exists( $heb_pp_as_main ) ) {
+	require_once $heb_pp_as_main;
+}
+unset( $heb_pp_as_main );
 
 require_once HEB_PP_PATH . 'includes/bootstrap.php';

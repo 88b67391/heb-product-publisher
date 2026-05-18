@@ -1,0 +1,53 @@
+.heb-pp-bootstrap .card {
+	max-width: 800px;
+	margin: 14px 0;
+	padding: 12px 18px;
+	background: #fff;
+	border-left: 4px solid #2271b1;
+}
+
+.heb-pp-bs-job-row .heb-pp-bs-status {
+	font-weight: 600;
+	text-transform: uppercase;
+	font-size: 11px;
+}
+
+.heb-pp-bs-job-row .heb-pp-bs-stage {
+	font-family: monospace;
+	color: #555;
+}
+
+.heb-pp-bs-job-row .heb-pp-bs-progress {
+	font-family: monospace;
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+#heb-pp-bs-details {
+	background: #fafafa;
+	border: 1px solid #ddd;
+	padding: 14px 20px;
+	max-width: 900px;
+}
+
+.heb-pp-bs-log {
+	max-height: 280px;
+	overflow-y: auto;
+	background: #1d2327;
+	color: #f3f3f3;
+	padding: 10px 14px;
+	font-family: monospace;
+	font-size: 12px;
+	line-height: 1.6;
+	border-radius: 3px;
+}
+
+.heb-pp-bs-log li {
+	margin: 0;
+	list-style: none;
+}
+
+.heb-pp-bs-log code {
+	background: transparent;
+	color: inherit;
+}

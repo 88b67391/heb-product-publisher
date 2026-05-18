@@ -37,6 +37,10 @@ require_once __DIR__ . '/class-post-lock.php';
 require_once __DIR__ . '/class-term-sync.php';
 require_once __DIR__ . '/class-term-hub-ui.php';
 require_once __DIR__ . '/class-term-redirect.php';
+require_once __DIR__ . '/class-bootstrap-status.php';
+require_once __DIR__ . '/class-bootstrap-queue.php';
+require_once __DIR__ . '/class-bootstrap-worker.php';
+require_once __DIR__ . '/class-bootstrap-tool.php';
 
 // 角色无关：任何站点都需要这些（hreflang 输出、设置 UI、更新检查、单页 hreflang 手填、
 // 日志查看、term 旧 slug 301 重定向）。
@@ -54,12 +58,14 @@ if ( Heb_Product_Publisher_Admin_Settings::is_receiver_mode() ) {
 	Heb_Product_Publisher_Post_Lock::instance();
 }
 
-// Hub 模式：分发 metabox、批量分发、产品列表列、term 分发 UI、source/translator 装载。
+// Hub 模式：分发 metabox、批量分发、产品列表列、term 分发 UI、Bootstrap 工具 + 异步 worker。
 if ( Heb_Product_Publisher_Admin_Settings::is_hub_mode() ) {
 	Heb_Product_Publisher_Hub_UI::instance();
 	Heb_Product_Publisher_Product_Columns::instance();
 	Heb_Product_Publisher_Bulk::instance();
 	Heb_Product_Publisher_Term_Hub_UI::instance();
+	Heb_Product_Publisher_Bootstrap_Tool::instance();
+	Heb_Product_Publisher_Bootstrap_Worker::instance();
 }
 
 // 兜底：首次启用后访问管理页自动建表。

@@ -5,7 +5,12 @@ Thumbs.db
 *.swo
 
 node_modules/
-vendor/
+# vendor 默认忽略，但 bundle Action Scheduler 一起进 release（避免用户安装 plugin 后还要单独装 AS）。
+# 注意 git 的 negation 不能跨已忽略目录，所以这里用 vendor/* 而不是 vendor/。
+vendor/*
+!vendor/woocommerce
+vendor/woocommerce/*
+!vendor/woocommerce/action-scheduler
 
 build/
 dist/
