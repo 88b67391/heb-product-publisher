@@ -109,6 +109,229 @@ class Heb_Product_Publisher_Receiver {
 				'permission_callback' => '__return_true',
 			]
 		);
+		register_rest_route(
+			'heb-publisher/v1',
+			'/manifest',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ $this, 'rest_manifest' ],
+				'permission_callback' => '__return_true',
+			]
+		);
+		register_rest_route(
+			'heb-publisher/v1',
+			'/delete-by-source',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ $this, 'rest_delete_by_source' ],
+				'permission_callback' => '__return_true',
+			]
+		);
+	}
+
+	/**
+	 * POST /manifest — 子站返回所有"按 source 关联的"对象摘要，Hub Dashboard 用。
+	 *
+	 * 可选过滤：
+	 *  - post_types: array<string> 限制 post types
+	 *  - taxonomies: array<string> 限制 taxonomies
+	 *  - since:      int 只返回 modified >= since 的对象
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function rest_manifest( $request ) {
+		$secret = self::get_secret();
+		if ( '' === $secret ) {
+			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		if ( ! $this->rate_limit_ok() ) {
+			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) ) {
+			$body = [];
+		}
+		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			$this->rate_limit_bump();
+			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+
+		$post_types = isset( $body['post_types'] ) && is_array( $body['post_types'] )
+			? array_map( 'sanitize_key', $body['post_types'] )
+			: (
+				function_exists( 'heb_pp_distributable_post_types' )
+					? heb_pp_distributable_post_types()
+					: []
+			);
+		$taxonomies = isset( $body['taxonomies'] ) && is_array( $body['taxonomies'] )
+			? array_map( 'sanitize_key', $body['taxonomies'] )
+			: (
+				function_exists( 'heb_pp_distributable_taxonomies' )
+					? heb_pp_distributable_taxonomies()
+					: []
+			);
+		$since = isset( $body['since'] ) ? (int) $body['since'] : 0;
+
+		$posts_out = [];
+		foreach ( $post_types as $pt ) {
+			if ( '' === $pt ) {
+				continue;
+			}
+			$q = new \WP_Query(
+				[
+					'post_type'              => $pt,
+					'post_status'            => 'any',
+					'posts_per_page'         => -1,
+					'fields'                 => 'ids',
+					'no_found_rows'          => true,
+					'update_post_meta_cache' => true,
+					'meta_query'             => [
+						[ 'key' => '_heb_publisher_source_post_id', 'compare' => 'EXISTS' ],
+					],
+				]
+			);
+			foreach ( $q->posts as $pid ) {
+				$src = (int) get_post_meta( $pid, '_heb_publisher_source_post_id', true );
+				$src_site = (string) get_post_meta( $pid, '_heb_publisher_source_site', true );
+				$modified = (int) get_post_modified_time( 'U', true, $pid );
+				if ( $since > 0 && $modified < $since ) {
+					continue;
+				}
+				$posts_out[] = [
+					'post_type'        => $pt,
+					'local_id'         => (int) $pid,
+					'source_post_id'   => $src,
+					'source_site'      => $src_site,
+					'modified'         => $modified,
+					'locked'           => '1' === (string) get_post_meta( $pid, '_heb_pp_locked', true ),
+					'status'           => (string) get_post_status( $pid ),
+					'edit_url'         => admin_url( 'post.php?post=' . $pid . '&action=edit' ),
+					'permalink'        => (string) get_permalink( $pid ),
+					'title'            => (string) get_the_title( $pid ),
+				];
+			}
+		}
+
+		$terms_out = [];
+		foreach ( $taxonomies as $tx ) {
+			if ( '' === $tx || ! taxonomy_exists( $tx ) ) {
+				continue;
+			}
+			$terms = get_terms(
+				[
+					'taxonomy'   => $tx,
+					'hide_empty' => false,
+					'meta_query' => [
+						[ 'key' => '_heb_pp_source_term_id', 'compare' => 'EXISTS' ],
+					],
+				]
+			);
+			if ( is_wp_error( $terms ) ) {
+				continue;
+			}
+			foreach ( $terms as $term ) {
+				$src      = (int) get_term_meta( $term->term_id, '_heb_pp_source_term_id', true );
+				$src_site = (string) get_term_meta( $term->term_id, '_heb_pp_source_site', true );
+				$link     = get_term_link( $term );
+				$terms_out[] = [
+					'taxonomy'       => $tx,
+					'local_id'       => (int) $term->term_id,
+					'source_term_id' => $src,
+					'source_site'    => $src_site,
+					'name'           => (string) $term->name,
+					'slug'           => (string) $term->slug,
+					'edit_url'       => admin_url( 'term.php?taxonomy=' . rawurlencode( $tx ) . '&tag_ID=' . $term->term_id ),
+					'permalink'      => is_wp_error( $link ) ? '' : (string) $link,
+				];
+			}
+		}
+
+		return rest_ensure_response(
+			[
+				'success' => true,
+				'posts'   => $posts_out,
+				'terms'   => $terms_out,
+				'host'    => (string) wp_parse_url( home_url(), PHP_URL_HOST ),
+			]
+		);
+	}
+
+	/**
+	 * POST /delete-by-source — 主站删除内容时级联通知子站删除对应本地副本。
+	 *
+	 * Payload:
+	 *  - kind: 'post' | 'term'
+	 *  - post_type / taxonomy
+	 *  - source_id, source_site
+	 *  - force (optional, true = bypass _heb_pp_locked)
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function rest_delete_by_source( $request ) {
+		$secret = self::get_secret();
+		if ( '' === $secret ) {
+			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		if ( ! $this->rate_limit_ok() ) {
+			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) ) {
+			$body = [];
+		}
+		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			$this->rate_limit_bump();
+			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+
+		$kind        = isset( $body['kind'] ) ? sanitize_key( (string) $body['kind'] ) : '';
+		$source_site = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+		$source_id   = isset( $body['source_id'] ) ? (int) $body['source_id'] : 0;
+		$force       = ! empty( $body['force'] );
+
+		if ( '' === $kind || '' === $source_site || $source_id <= 0 ) {
+			return new \WP_Error( 'heb_pub_bad_payload', __( 'Bad payload.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+
+		if ( 'post' === $kind ) {
+			$post_type = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : '';
+			if ( '' === $post_type ) {
+				return new \WP_Error( 'heb_pub_bad_payload', __( 'post_type required.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+			}
+			$local_id = $this->find_by_source( $post_type, $source_id, $source_site );
+			if ( $local_id <= 0 ) {
+				return rest_ensure_response( [ 'success' => true, 'deleted' => false, 'reason' => 'not_found' ] );
+			}
+			if ( ! $force && '1' === (string) get_post_meta( $local_id, '_heb_pp_locked', true ) ) {
+				return rest_ensure_response( [ 'success' => true, 'deleted' => false, 'reason' => 'locked', 'local_id' => $local_id ] );
+			}
+			$deleted = wp_delete_post( $local_id, true );
+			return rest_ensure_response( [ 'success' => true, 'deleted' => (bool) $deleted, 'local_id' => $local_id ] );
+		}
+
+		if ( 'term' === $kind ) {
+			$taxonomy = isset( $body['taxonomy'] ) ? sanitize_key( (string) $body['taxonomy'] ) : '';
+			if ( '' === $taxonomy || ! taxonomy_exists( $taxonomy ) ) {
+				return new \WP_Error( 'heb_pub_bad_payload', __( 'taxonomy required.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+			}
+			$local_id = $this->find_term_by_source( $taxonomy, $source_id, $source_site );
+			if ( $local_id <= 0 ) {
+				return rest_ensure_response( [ 'success' => true, 'deleted' => false, 'reason' => 'not_found' ] );
+			}
+			$res = wp_delete_term( $local_id, $taxonomy );
+			return rest_ensure_response(
+				[
+					'success'  => ! is_wp_error( $res ) && false !== $res,
+					'deleted'  => ! is_wp_error( $res ) && false !== $res,
+					'local_id' => $local_id,
+					'message'  => is_wp_error( $res ) ? $res->get_error_message() : '',
+				]
+			);
+		}
+
+		return new \WP_Error( 'heb_pub_bad_payload', __( 'Unknown kind.', 'heb-product-publisher' ), [ 'status' => 400 ] );
 	}
 
 	/**

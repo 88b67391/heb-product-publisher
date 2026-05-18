@@ -1,0 +1,30 @@
+.heb-pp-dashboard .heb-pp-dash-table {
+	margin-top: 6px;
+}
+
+.heb-pp-dashboard .heb-pp-dash-status {
+	font-size: 16px;
+	font-weight: 600;
+	font-family: monospace;
+}
+
+.heb-pp-dashboard .heb-pp-dash-status[data-code="not_sent"] {
+	opacity: 0.5;
+}
+
+.heb-pp-dashboard .heb-pp-dash-cell {
+	white-space: nowrap;
+}
+
+.heb-pp-dashboard .heb-pp-dash-row td {
+	vertical-align: middle;
+}
+
+.heb-pp-dashboard .heb-pp-dash-pending {
+	color: #bbb;
+}
+
+#heb-pp-dash-status {
+	font-style: italic;
+	color: #666;
+}

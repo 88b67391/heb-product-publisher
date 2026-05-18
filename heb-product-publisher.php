@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       HEB Product Publisher
  * Plugin URI:        https://github.com/88b67391/heb-product-publisher
- * Description:       一体化产品分发插件：同一插件在主站作为 Hub（翻译 + 分发），在语言站作为 Receiver（接收推送、暴露站点信息）。翻译通过 OpenRouter，升级通过 GitHub Releases 自动推送。2.7 显式角色；3.0-alpha.1 page+Elementor；3.0-alpha.2 term；3.0-alpha.3 Site Bootstrap；3.0-alpha.4 菜单/全局设置/Elementor 模板附加 meta。
- * Version:           3.0.0-alpha.4
+ * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集：显式站点角色、page+Elementor、term+AI slug、Site Bootstrap (Action Scheduler)、菜单+全局设置同步、分发管理 Dashboard、删除级联。
+ * Version:           3.0.0-beta.1
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            HEB
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'HEB_PP_VERSION', '3.0.0-alpha.4' );
+define( 'HEB_PP_VERSION', '3.0.0-beta.1' );
 define( 'HEB_PP_FILE', __FILE__ );
 define( 'HEB_PP_PATH', plugin_dir_path( __FILE__ ) );
 define( 'HEB_PP_URL', plugin_dir_url( __FILE__ ) );
