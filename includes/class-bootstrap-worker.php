@@ -31,6 +31,8 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		add_action( Heb_Product_Publisher_Bootstrap_Queue::HOOK_PROBE, [ $this, 'handle_probe' ], 10, 1 );
 		add_action( Heb_Product_Publisher_Bootstrap_Queue::HOOK_TERM, [ $this, 'handle_term' ], 10, 1 );
 		add_action( Heb_Product_Publisher_Bootstrap_Queue::HOOK_POST, [ $this, 'handle_post' ], 10, 1 );
+		add_action( Heb_Product_Publisher_Bootstrap_Queue::HOOK_MENU, [ $this, 'handle_menu' ], 10, 1 );
+		add_action( Heb_Product_Publisher_Bootstrap_Queue::HOOK_SETTINGS, [ $this, 'handle_settings' ], 10, 1 );
 		add_action( Heb_Product_Publisher_Bootstrap_Queue::HOOK_FINALIZE, [ $this, 'handle_finalize' ], 10, 1 );
 	}
 
@@ -145,6 +147,94 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		} catch ( \Throwable $e ) {
 			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 			Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'post', $post_id, $e->getMessage() );
+		}
+		$this->maybe_advance_stage( $job_id );
+	}
+
+	/**
+	 * @param array<string,mixed> $args Args.
+	 * @return void
+	 */
+	public function handle_menu( $args ) {
+		$args    = $this->normalize_args( $args );
+		$job_id  = (string) ( $args['job_id'] ?? '' );
+		$menu_id = (int) ( $args['menu_id'] ?? 0 );
+		if ( '' === $job_id || ! $this->job_can_run( $job_id ) ) {
+			return;
+		}
+		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_MENUS;
+		try {
+			$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+			$site = Heb_Product_Publisher_Admin_Settings::get_site( (string) $rec['site_id'] );
+			if ( ! $site ) {
+				throw new \RuntimeException( 'site config missing' );
+			}
+			$payload = Heb_Product_Publisher_Menu_Sync::build_payload( $menu_id );
+			if ( empty( $payload ) ) {
+				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'skipped' );
+				$this->maybe_advance_stage( $job_id );
+				return;
+			}
+			$translator = new Heb_Product_Publisher_Translator();
+			$menu_sync  = new Heb_Product_Publisher_Menu_Sync();
+			$res        = $menu_sync->distribute_to_site( $menu_id, $payload, (string) $payload['source_locale'], $site, $translator );
+			if ( empty( $res['ok'] ) ) {
+				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
+				Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'menu', $menu_id, isset( $res['message'] ) ? (string) $res['message'] : 'unknown' );
+			} else {
+				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'done' );
+				Heb_Product_Publisher_Bootstrap_Status::add_log(
+					$job_id,
+					'info',
+					sprintf( __( 'Menu #%1$d → site = %2$d items', 'heb-product-publisher' ), $menu_id, (int) ( $res['items_imported'] ?? 0 ) )
+				);
+			}
+		} catch ( \Throwable $e ) {
+			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
+			Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'menu', $menu_id, $e->getMessage() );
+		}
+		$this->maybe_advance_stage( $job_id );
+	}
+
+	/**
+	 * @param array<string,mixed> $args Args.
+	 * @return void
+	 */
+	public function handle_settings( $args ) {
+		$args   = $this->normalize_args( $args );
+		$job_id = (string) ( $args['job_id'] ?? '' );
+		if ( '' === $job_id || ! $this->job_can_run( $job_id ) ) {
+			return;
+		}
+		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_SETTINGS;
+		try {
+			$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+			$site = Heb_Product_Publisher_Admin_Settings::get_site( (string) $rec['site_id'] );
+			if ( ! $site ) {
+				throw new \RuntimeException( 'site config missing' );
+			}
+			$payload    = Heb_Product_Publisher_Settings_Sync::build_payload();
+			$translator = new Heb_Product_Publisher_Translator();
+			$settings   = new Heb_Product_Publisher_Settings_Sync();
+			$res        = $settings->distribute_to_site( $payload, (string) $payload['source_locale'], $site, $translator );
+			if ( empty( $res['ok'] ) ) {
+				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
+				Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'settings', 0, isset( $res['message'] ) ? (string) $res['message'] : 'unknown' );
+			} else {
+				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'done' );
+				Heb_Product_Publisher_Bootstrap_Status::add_log(
+					$job_id,
+					'info',
+					sprintf(
+						__( 'Settings applied: %1$d, skipped: %2$d', 'heb-product-publisher' ),
+						count( (array) ( $res['applied'] ?? [] ) ),
+						count( (array) ( $res['skipped'] ?? [] ) )
+					)
+				);
+			}
+		} catch ( \Throwable $e ) {
+			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
+			Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'settings', 0, $e->getMessage() );
 		}
 		$this->maybe_advance_stage( $job_id );
 	}

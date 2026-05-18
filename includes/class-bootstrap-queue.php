@@ -51,8 +51,8 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 		$defaults = [
 			'scope_terms'    => true,
 			'scope_posts'    => true,
-			'scope_menus'    => false,
-			'scope_settings' => false,
+			'scope_menus'    => true,
+			'scope_settings' => true,
 			'dry_run'        => false,
 		];
 		$opts = array_merge( $defaults, $opts );

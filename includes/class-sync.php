@@ -111,6 +111,42 @@ class Heb_Product_Publisher_Sync {
 	}
 
 	/**
+	 * Elementor 模板专有的附加 meta（conditions / priority / preview 等），
+	 * 仅对 elementor_library 类型的 post 有意义；其他类型返回空数组。
+	 *
+	 * @param int $post_id Post id.
+	 * @return array<string,mixed>
+	 */
+	public static function collect_elementor_extra_meta( $post_id ) {
+		$post = get_post( $post_id );
+		if ( ! $post instanceof \WP_Post ) {
+			return [];
+		}
+		// 只对 elementor_library 收集这些 meta，避免污染产品/页面的 payload。
+		if ( 'elementor_library' !== $post->post_type ) {
+			return [];
+		}
+		$keys = (array) apply_filters(
+			'heb_pp_elementor_extra_meta_keys',
+			[
+				'_elementor_conditions',
+				'_elementor_priority',
+				'_elementor_template_include',
+				'_elementor_template_disable',
+				'_wp_page_template',
+			]
+		);
+		$out = [];
+		foreach ( $keys as $k ) {
+			$v = get_post_meta( $post->ID, $k, true );
+			if ( '' !== $v && null !== $v ) {
+				$out[ $k ] = $v;
+			}
+		}
+		return $out;
+	}
+
+	/**
 	 * 读取 Elementor 页面级设置（`_elementor_page_settings`），不含媒体。
 	 *
 	 * @param int $post_id Post id.
@@ -202,11 +238,12 @@ class Heb_Product_Publisher_Sync {
 
 		$acf = self::encode_acf_for_transport( self::get_acf_raw( $post_id ) );
 
-		$elementor_data     = self::get_elementor_data( $post_id );
-		$elementor_settings = self::get_elementor_page_settings( $post_id );
-		$elementor_version  = (string) get_post_meta( $post_id, '_elementor_version', true );
-		$elementor_edit_mode = (string) get_post_meta( $post_id, '_elementor_edit_mode', true );
+		$elementor_data          = self::get_elementor_data( $post_id );
+		$elementor_settings      = self::get_elementor_page_settings( $post_id );
+		$elementor_version       = (string) get_post_meta( $post_id, '_elementor_version', true );
+		$elementor_edit_mode     = (string) get_post_meta( $post_id, '_elementor_edit_mode', true );
 		$elementor_template_type = (string) get_post_meta( $post_id, '_elementor_template_type', true );
+		$elementor_extra_meta    = self::collect_elementor_extra_meta( $post_id );
 
 		return [
 			'post_type'              => $post->post_type,
@@ -217,11 +254,12 @@ class Heb_Product_Publisher_Sync {
 			'status'                 => $post->post_status,
 			'featured_url'           => $feat_url ? (string) $feat_url : '',
 			'acf'                    => $acf,
-			'elementor_data'         => $elementor_data,
+			'elementor_data'          => $elementor_data,
 			'elementor_page_settings' => $elementor_settings,
-			'elementor_version'      => $elementor_version,
-			'elementor_edit_mode'    => $elementor_edit_mode,
+			'elementor_version'       => $elementor_version,
+			'elementor_edit_mode'     => $elementor_edit_mode,
 			'elementor_template_type' => $elementor_template_type,
+			'elementor_extra_meta'    => $elementor_extra_meta,
 			'taxonomies'             => self::get_term_slugs_map( $post_id ),
 			'seo'                    => self::get_seo_meta( $post_id ),
 			'source_post_id'         => (int) $post_id,

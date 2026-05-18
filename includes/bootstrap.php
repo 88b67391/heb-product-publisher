@@ -37,6 +37,8 @@ require_once __DIR__ . '/class-post-lock.php';
 require_once __DIR__ . '/class-term-sync.php';
 require_once __DIR__ . '/class-term-hub-ui.php';
 require_once __DIR__ . '/class-term-redirect.php';
+require_once __DIR__ . '/class-menu-sync.php';
+require_once __DIR__ . '/class-settings-sync.php';
 require_once __DIR__ . '/class-bootstrap-status.php';
 require_once __DIR__ . '/class-bootstrap-queue.php';
 require_once __DIR__ . '/class-bootstrap-worker.php';

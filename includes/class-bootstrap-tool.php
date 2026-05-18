@@ -118,10 +118,10 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 								<fieldset>
 									<label><input type="checkbox" id="heb-pp-bs-scope-terms" checked /> <?php esc_html_e( '分类（terms）', 'heb-product-publisher' ); ?></label><br />
 									<label><input type="checkbox" id="heb-pp-bs-scope-posts" checked /> <?php esc_html_e( '内容（products / solutions / pages）', 'heb-product-publisher' ); ?></label><br />
-									<label><input type="checkbox" id="heb-pp-bs-scope-menus" /> <?php esc_html_e( '导航菜单（PR 4 上线后启用）', 'heb-product-publisher' ); ?></label><br />
-									<label><input type="checkbox" id="heb-pp-bs-scope-settings" /> <?php esc_html_e( 'WordPress 全局设置（PR 4 上线后启用）', 'heb-product-publisher' ); ?></label>
+									<label><input type="checkbox" id="heb-pp-bs-scope-settings" checked /> <?php esc_html_e( 'WordPress 全局设置（标题、描述、permalinks、首页）', 'heb-product-publisher' ); ?></label><br />
+									<label><input type="checkbox" id="heb-pp-bs-scope-menus" checked /> <?php esc_html_e( '导航菜单（含菜单项 object 反查）', 'heb-product-publisher' ); ?></label>
 								</fieldset>
-								<p class="description"><?php esc_html_e( '默认仅 terms + posts；菜单和全局设置需要 PR 4 引入对应 sync 类后才会真正执行。', 'heb-product-publisher' ); ?></p>
+								<p class="description"><?php esc_html_e( '推荐保持全部勾选，让目标站一次性获得"开站即可用"的完整内容。', 'heb-product-publisher' ); ?></p>
 							</td>
 						</tr>
 					</table>

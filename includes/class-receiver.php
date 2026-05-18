@@ -91,6 +91,312 @@ class Heb_Product_Publisher_Receiver {
 				'permission_callback' => '__return_true',
 			]
 		);
+		register_rest_route(
+			'heb-publisher/v1',
+			'/import-menu',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ $this, 'rest_import_menu' ],
+				'permission_callback' => '__return_true',
+			]
+		);
+		register_rest_route(
+			'heb-publisher/v1',
+			'/import-settings',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ $this, 'rest_import_settings' ],
+				'permission_callback' => '__return_true',
+			]
+		);
+	}
+
+	/**
+	 * POST /import-menu — 接收主站 nav menu 分发。
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function rest_import_menu( $request ) {
+		$secret = self::get_secret();
+		if ( '' === $secret ) {
+			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		if ( ! $this->rate_limit_ok() ) {
+			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) ) {
+			$body = [];
+		}
+		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			$this->rate_limit_bump();
+			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+
+		$source_menu_id = isset( $body['source_menu_id'] ) ? (int) $body['source_menu_id'] : 0;
+		$source_site    = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+		$name           = isset( $body['name'] ) ? sanitize_text_field( (string) $body['name'] ) : '';
+		if ( $source_menu_id <= 0 || '' === $source_site || '' === $name ) {
+			return new \WP_Error( 'heb_pub_bad_payload', __( 'Bad payload.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+
+		// 1) 找/建本地 menu（按 source_menu_id meta 反查，找不到按 slug，再不行新建）。
+		$menu_id = $this->find_menu_by_source( $source_menu_id, $source_site );
+		if ( $menu_id <= 0 ) {
+			$slug = isset( $body['slug'] ) ? sanitize_title( (string) $body['slug'] ) : sanitize_title( $name );
+			$exists = wp_get_nav_menu_object( $slug );
+			if ( $exists instanceof \WP_Term ) {
+				$menu_id = (int) $exists->term_id;
+				// 重命名到翻译后名字
+				wp_update_nav_menu_object(
+					$menu_id,
+					[ 'menu-name' => $name, 'description' => isset( $body['description'] ) ? sanitize_text_field( (string) $body['description'] ) : '' ]
+				);
+			} else {
+				$menu_id = wp_create_nav_menu( $name );
+				if ( is_wp_error( $menu_id ) ) {
+					return new \WP_Error( 'heb_pub_menu_create', $menu_id->get_error_message(), [ 'status' => 500 ] );
+				}
+			}
+			update_term_meta( $menu_id, Heb_Product_Publisher_Menu_Sync::META_MENU_SOURCE_ID, $source_menu_id );
+			update_term_meta( $menu_id, Heb_Product_Publisher_Menu_Sync::META_MENU_SOURCE_SITE, $source_site );
+		} else {
+			// 更新已存在 menu 的名字 / 描述。
+			wp_update_nav_menu_object(
+				$menu_id,
+				[
+					'menu-name'   => $name,
+					'description' => isset( $body['description'] ) ? sanitize_text_field( (string) $body['description'] ) : '',
+				]
+			);
+		}
+
+		// 2) 清空原有 menu items（reconcile 方式：先删后建，避免 source_id 顺序错乱）。
+		$existing_items = wp_get_nav_menu_items( $menu_id, [ 'update_post_term_cache' => false ] );
+		if ( is_array( $existing_items ) ) {
+			foreach ( $existing_items as $it ) {
+				if ( $it instanceof \WP_Post ) {
+					wp_delete_post( $it->ID, true );
+				}
+			}
+		}
+
+		// 3) 按 source_id → local_menu_item_id 映射，按 menu_order 顺序逐个插入。
+		$items = isset( $body['items'] ) && is_array( $body['items'] ) ? $body['items'] : [];
+		usort(
+			$items,
+			static function ( $a, $b ) {
+				return ( (int) ( $a['menu_order'] ?? 0 ) ) - ( (int) ( $b['menu_order'] ?? 0 ) );
+			}
+		);
+		$source_to_local = [];
+		$imported        = 0;
+
+		$target_url_host = isset( $body['target_url_host'] ) ? sanitize_text_field( (string) $body['target_url_host'] ) : '';
+
+		foreach ( $items as $item ) {
+			if ( ! is_array( $item ) ) {
+				continue;
+			}
+			$source_id        = (int) ( $item['source_id'] ?? 0 );
+			$source_parent_id = (int) ( $item['source_parent_id'] ?? 0 );
+			$title            = sanitize_text_field( (string) ( $item['title'] ?? '' ) );
+			$obj_type         = sanitize_key( (string) ( $item['object_type'] ?? 'custom' ) );
+			$obj_subtype      = sanitize_key( (string) ( $item['object_subtype'] ?? '' ) );
+			$obj_source_id    = (int) ( $item['object_source_id'] ?? 0 );
+			$obj_source_site  = sanitize_text_field( (string) ( $item['object_source_site'] ?? $source_site ) );
+
+			$local_object_id   = 0;
+			$resolved_url      = isset( $item['url'] ) ? esc_url_raw( (string) $item['url'] ) : '';
+			$final_type        = $obj_type;
+			$final_subtype     = $obj_subtype;
+
+			// 反查本地对象。
+			if ( 'post_type' === $obj_type && $obj_source_id > 0 ) {
+				$local_object_id = $this->find_by_source( $obj_subtype, $obj_source_id, $obj_source_site );
+			} elseif ( 'taxonomy' === $obj_type && $obj_source_id > 0 ) {
+				$local_object_id = $this->find_term_by_source( $obj_subtype, $obj_source_id, $obj_source_site );
+			}
+
+			if ( $local_object_id <= 0 ) {
+				// 退化为 custom 链接。如果 URL 是源站主域，替换成目标站域名作 fallback。
+				$final_type    = 'custom';
+				$final_subtype = '';
+				if ( '' !== $resolved_url && '' !== $target_url_host && '' !== $source_site && $source_site !== $target_url_host ) {
+					$resolved_url = str_replace( '://' . $source_site, '://' . $target_url_host, $resolved_url );
+				}
+			}
+
+			$args = [
+				'menu-item-title'       => $title,
+				'menu-item-description' => sanitize_text_field( (string) ( $item['description'] ?? '' ) ),
+				'menu-item-attr-title'  => sanitize_text_field( (string) ( $item['attr_title'] ?? '' ) ),
+				'menu-item-target'      => sanitize_text_field( (string) ( $item['target'] ?? '' ) ),
+				'menu-item-classes'     => is_array( $item['classes'] ?? null ) ? implode( ' ', array_map( 'sanitize_html_class', $item['classes'] ) ) : '',
+				'menu-item-xfn'         => sanitize_text_field( (string) ( $item['xfn'] ?? '' ) ),
+				'menu-item-status'      => 'publish',
+				'menu-item-parent-id'   => isset( $source_to_local[ $source_parent_id ] ) ? (int) $source_to_local[ $source_parent_id ] : 0,
+			];
+
+			if ( 'custom' === $final_type ) {
+				$args['menu-item-type'] = 'custom';
+				$args['menu-item-url']  = $resolved_url;
+			} elseif ( 'post_type' === $final_type ) {
+				$args['menu-item-type']      = 'post_type';
+				$args['menu-item-object']    = $final_subtype;
+				$args['menu-item-object-id'] = (int) $local_object_id;
+			} elseif ( 'taxonomy' === $final_type ) {
+				$args['menu-item-type']      = 'taxonomy';
+				$args['menu-item-object']    = $final_subtype;
+				$args['menu-item-object-id'] = (int) $local_object_id;
+			}
+
+			$new_item_id = wp_update_nav_menu_item( $menu_id, 0, $args );
+			if ( ! is_wp_error( $new_item_id ) && $new_item_id > 0 ) {
+				$source_to_local[ $source_id ] = (int) $new_item_id;
+				$imported++;
+			}
+		}
+
+		// 4) 设置 theme locations。
+		if ( isset( $body['locations'] ) && is_array( $body['locations'] ) ) {
+			$locs = get_theme_mod( 'nav_menu_locations', [] );
+			if ( ! is_array( $locs ) ) {
+				$locs = [];
+			}
+			foreach ( $body['locations'] as $loc ) {
+				$loc = sanitize_key( (string) $loc );
+				if ( '' !== $loc ) {
+					$locs[ $loc ] = (int) $menu_id;
+				}
+			}
+			set_theme_mod( 'nav_menu_locations', $locs );
+		}
+
+		return rest_ensure_response(
+			[
+				'success'        => true,
+				'menu_id'        => (int) $menu_id,
+				'items_imported' => (int) $imported,
+				'items_total'    => count( $items ),
+			]
+		);
+	}
+
+	/**
+	 * POST /import-settings — 接收主站全局选项分发。
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function rest_import_settings( $request ) {
+		$secret = self::get_secret();
+		if ( '' === $secret ) {
+			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		if ( ! $this->rate_limit_ok() ) {
+			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) ) {
+			$body = [];
+		}
+		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			$this->rate_limit_bump();
+			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		$source_site = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+		if ( '' === $source_site ) {
+			return new \WP_Error( 'heb_pub_bad_payload', __( 'Bad payload.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+
+		$copy_allowed      = Heb_Product_Publisher_Settings_Sync::copy_options();
+		$translate_allowed = Heb_Product_Publisher_Settings_Sync::translate_options();
+		$ref_allowed       = Heb_Product_Publisher_Settings_Sync::post_ref_options();
+
+		$applied = [];
+		$skipped = [];
+
+		foreach ( (array) ( $body['copy'] ?? [] ) as $opt => $val ) {
+			$opt = sanitize_key( (string) $opt );
+			if ( ! in_array( $opt, $copy_allowed, true ) ) {
+				$skipped[] = $opt . ' (not whitelisted)';
+				continue;
+			}
+			update_option( $opt, $val );
+			$applied[] = $opt;
+		}
+		foreach ( (array) ( $body['translate'] ?? [] ) as $opt => $val ) {
+			$opt = sanitize_key( (string) $opt );
+			if ( ! in_array( $opt, $translate_allowed, true ) ) {
+				$skipped[] = $opt . ' (not whitelisted)';
+				continue;
+			}
+			update_option( $opt, sanitize_text_field( (string) $val ) );
+			$applied[] = $opt;
+		}
+		foreach ( (array) ( $body['post_refs'] ?? [] ) as $opt => $ref ) {
+			$opt = sanitize_key( (string) $opt );
+			if ( ! in_array( $opt, $ref_allowed, true ) || ! is_array( $ref ) ) {
+				$skipped[] = $opt . ' (not whitelisted or bad ref)';
+				continue;
+			}
+			$source_post_id = (int) ( $ref['source_post_id'] ?? 0 );
+			if ( $source_post_id <= 0 ) {
+				$skipped[] = $opt . ' (missing source_post_id)';
+				continue;
+			}
+			// 跨所有 distributable post types 找一个匹配的 local post。
+			$local_id = 0;
+			foreach ( heb_pp_distributable_post_types() as $pt ) {
+				$local_id = $this->find_by_source( $pt, $source_post_id, $source_site );
+				if ( $local_id > 0 ) {
+					break;
+				}
+			}
+			if ( $local_id <= 0 ) {
+				$skipped[] = $opt . ' (no local post matched source_post_id=' . $source_post_id . ')';
+				continue;
+			}
+			update_option( $opt, (int) $local_id );
+			$applied[] = $opt;
+		}
+
+		return rest_ensure_response(
+			[
+				'success' => true,
+				'applied' => $applied,
+				'skipped' => $skipped,
+			]
+		);
+	}
+
+	/**
+	 * 按 source_menu_id meta 反查本地 nav_menu term。
+	 *
+	 * @param int    $source_id   Source menu id.
+	 * @param string $source_site Source site host.
+	 * @return int
+	 */
+	private function find_menu_by_source( $source_id, $source_site ) {
+		$terms = get_terms(
+			[
+				'taxonomy'   => 'nav_menu',
+				'hide_empty' => false,
+				'number'     => 1,
+				'fields'     => 'ids',
+				'meta_query' => [
+					'relation' => 'AND',
+					[ 'key' => Heb_Product_Publisher_Menu_Sync::META_MENU_SOURCE_ID, 'value' => (int) $source_id ],
+					[ 'key' => Heb_Product_Publisher_Menu_Sync::META_MENU_SOURCE_SITE, 'value' => $source_site ],
+				],
+			]
+		);
+		if ( is_wp_error( $terms ) || empty( $terms ) ) {
+			return 0;
+		}
+		return (int) $terms[0];
 	}
 
 	/**
@@ -1024,6 +1330,21 @@ class Heb_Product_Publisher_Receiver {
 		}
 		if ( ! empty( $body['elementor_template_type'] ) && is_string( $body['elementor_template_type'] ) ) {
 			update_post_meta( $post_id, '_elementor_template_type', sanitize_text_field( $body['elementor_template_type'] ) );
+		}
+		if ( ! empty( $body['elementor_extra_meta'] ) && is_array( $body['elementor_extra_meta'] ) ) {
+			$decoded_extra = $this->decode_acf_from_transport( $body['elementor_extra_meta'] );
+			if ( is_array( $decoded_extra ) ) {
+				foreach ( $decoded_extra as $meta_key => $meta_value ) {
+					if ( ! is_string( $meta_key ) || '' === $meta_key ) {
+						continue;
+					}
+					// 限制：只允许 _elementor_ / _wp_page_template 前缀的 meta，防止恶意 payload 写任意 meta。
+					if ( ! preg_match( '/^(_elementor_|_wp_page_template$)/', $meta_key ) ) {
+						continue;
+					}
+					update_post_meta( $post_id, $meta_key, $meta_value );
+				}
+			}
 		}
 
 		// 清缓存：写完 _elementor_data 后必须清 CSS 缓存，否则前端可能还在用旧版式。
