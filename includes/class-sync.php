@@ -140,10 +140,14 @@ class Heb_Product_Publisher_Sync {
 	}
 
 	/**
-	 * 读取文章的分类（按 slug 导出）。
+	 * 读取文章的分类，导出为 Receiver 友好的对象数组。
+	 *
+	 * v3.0 起每个 term 导出为 `{ source_term_id, slug_fallback, name, source_parent_term_id }`，
+	 * 让 Receiver 端能按 source_term_id 反向关联本地已存 term，避免重复创建 slug 污染。
+	 * 老版本 Receiver 不识别新字段时会回退到 slug_fallback，行为等同于旧版本。
 	 *
 	 * @param int $post_id Post ID.
-	 * @return array<string, array<int,string>>
+	 * @return array<string, array<int, array<string,mixed>>>
 	 */
 	public static function get_term_slugs_map( $post_id ) {
 		$post = get_post( $post_id );
@@ -156,14 +160,20 @@ class Heb_Product_Publisher_Sync {
 			if ( is_wp_error( $terms ) || empty( $terms ) ) {
 				continue;
 			}
-			$slugs = [];
+			$rows = [];
 			foreach ( $terms as $t ) {
-				if ( isset( $t->slug ) ) {
-					$slugs[] = (string) $t->slug;
+				if ( ! isset( $t->slug ) ) {
+					continue;
 				}
+				$rows[] = [
+					'source_term_id'        => (int) $t->term_id,
+					'slug_fallback'         => (string) $t->slug,
+					'name'                  => (string) $t->name,
+					'source_parent_term_id' => isset( $t->parent ) ? (int) $t->parent : 0,
+				];
 			}
-			if ( ! empty( $slugs ) ) {
-				$out[ $tax ] = array_values( array_unique( $slugs ) );
+			if ( ! empty( $rows ) ) {
+				$out[ $tax ] = $rows;
 			}
 		}
 		return $out;

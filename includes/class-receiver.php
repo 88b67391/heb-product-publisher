@@ -73,6 +73,243 @@ class Heb_Product_Publisher_Receiver {
 				'permission_callback' => '__return_true',
 			]
 		);
+		register_rest_route(
+			'heb-publisher/v1',
+			'/import-term',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ $this, 'rest_import_term' ],
+				'permission_callback' => '__return_true',
+			]
+		);
+		register_rest_route(
+			'heb-publisher/v1',
+			'/sync-term-lang-map',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ $this, 'rest_sync_term_lang_map' ],
+				'permission_callback' => '__return_true',
+			]
+		);
+	}
+
+	/**
+	 * Receiver 端允许写入的 taxonomy 白名单。
+	 *
+	 * 默认 = 子站当前注册的所有 taxonomy 且对应到 distributable post type 关联的（即与 Hub 一致）。
+	 * 可通过 filter `heb_pp_receiver_allowed_taxonomies` 显式扩展。
+	 *
+	 * @return array<int,string>
+	 */
+	public static function allowed_taxonomies() {
+		$base = function_exists( 'heb_pp_distributable_taxonomies' )
+			? heb_pp_distributable_taxonomies()
+			: [];
+		$pts  = (array) apply_filters( 'heb_pp_receiver_allowed_taxonomies', $base );
+		$out  = [];
+		foreach ( $pts as $tx ) {
+			if ( ! is_string( $tx ) ) {
+				continue;
+			}
+			$tx = sanitize_key( $tx );
+			if ( '' !== $tx ) {
+				$out[ $tx ] = true;
+			}
+		}
+		return array_keys( $out );
+	}
+
+	/**
+	 * POST /import-term — 接收主站 term 分发。
+	 *
+	 * Payload:
+	 *  - taxonomy, name, description, slug_fallback, slug_translated
+	 *  - source_term_id, source_parent_term_id, source_site, source_locale
+	 *  - lang_map (主站当前已知的全语言 URL 矩阵)
+	 *  - secret
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function rest_import_term( $request ) {
+		$secret = self::get_secret();
+		if ( '' === $secret ) {
+			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		if ( ! $this->rate_limit_ok() ) {
+			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts. Try again later.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) ) {
+			$body = [];
+		}
+		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			$this->rate_limit_bump();
+			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+
+		$taxonomy = isset( $body['taxonomy'] ) ? sanitize_key( (string) $body['taxonomy'] ) : '';
+		if ( '' === $taxonomy || ! taxonomy_exists( $taxonomy ) ) {
+			return new \WP_Error( 'heb_pub_bad_taxonomy', __( 'Taxonomy does not exist on this site.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+		if ( ! in_array( $taxonomy, self::allowed_taxonomies(), true ) ) {
+			return new \WP_Error( 'heb_pub_forbidden_taxonomy', __( 'Taxonomy is not allowed for import.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+
+		$source_term_id = isset( $body['source_term_id'] ) ? (int) $body['source_term_id'] : 0;
+		$source_site    = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+		if ( $source_term_id <= 0 || '' === $source_site ) {
+			return new \WP_Error( 'heb_pub_bad_payload', __( 'Bad payload.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+
+		$name = isset( $body['name'] ) ? sanitize_text_field( (string) $body['name'] ) : '';
+		if ( '' === $name ) {
+			return new \WP_Error( 'heb_pub_name', __( 'Term name is required.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+		$description = isset( $body['description'] ) ? wp_kses_post( (string) $body['description'] ) : '';
+
+		$translated_slug = isset( $body['slug_translated'] ) ? sanitize_title( (string) $body['slug_translated'] ) : '';
+		$fallback_slug   = isset( $body['slug_fallback'] ) ? sanitize_title( (string) $body['slug_fallback'] ) : '';
+		$new_slug        = '' !== $translated_slug ? $translated_slug : ( '' !== $fallback_slug ? $fallback_slug : sanitize_title( $name ) );
+
+		// 1) 反查已存：先按 source_term_id meta，找不到再按 slug fallback。
+		$existing_id = $this->find_term_by_source( $taxonomy, $source_term_id, $source_site );
+		if ( ! $existing_id && '' !== $fallback_slug ) {
+			$term = get_term_by( 'slug', $fallback_slug, $taxonomy );
+			if ( $term && ! is_wp_error( $term ) ) {
+				$existing_id = (int) $term->term_id;
+			}
+		}
+
+		// 2) parent 远程反查。
+		$source_parent_id = isset( $body['source_parent_term_id'] ) ? (int) $body['source_parent_term_id'] : 0;
+		$local_parent     = 0;
+		if ( $source_parent_id > 0 ) {
+			$local_parent = $this->find_term_by_source( $taxonomy, $source_parent_id, $source_site );
+		}
+
+		$args = [
+			'description' => $description,
+			'slug'        => $new_slug,
+		];
+		if ( $local_parent > 0 ) {
+			$args['parent'] = $local_parent;
+		}
+
+		if ( $existing_id > 0 ) {
+			// 旧 slug 入 _heb_pp_old_slugs 数组用于 301 redirect。
+			$current = get_term( $existing_id, $taxonomy );
+			if ( $current instanceof \WP_Term ) {
+				$current_slug = (string) $current->slug;
+				if ( '' !== $current_slug && $current_slug !== $new_slug ) {
+					$old = get_term_meta( $existing_id, '_heb_pp_old_slugs', true );
+					$old = is_array( $old ) ? $old : [];
+					if ( ! in_array( $current_slug, $old, true ) ) {
+						$old[] = $current_slug;
+					}
+					update_term_meta( $existing_id, '_heb_pp_old_slugs', array_values( $old ) );
+				}
+			}
+			$args['name'] = $name;
+			$res          = wp_update_term( $existing_id, $taxonomy, $args );
+		} else {
+			$res = wp_insert_term( $name, $taxonomy, $args );
+		}
+		if ( is_wp_error( $res ) ) {
+			return new \WP_Error( 'heb_pub_term_save', $res->get_error_message(), [ 'status' => 500 ] );
+		}
+		$term_id = isset( $res['term_id'] ) ? (int) $res['term_id'] : 0;
+		if ( $term_id <= 0 ) {
+			return new \WP_Error( 'heb_pub_term_save', __( 'Term save returned no id.', 'heb-product-publisher' ), [ 'status' => 500 ] );
+		}
+
+		update_term_meta( $term_id, '_heb_pp_source_term_id', $source_term_id );
+		update_term_meta( $term_id, '_heb_pp_source_site', $source_site );
+		if ( ! empty( $body['lang_map'] ) && is_array( $body['lang_map'] ) ) {
+			update_term_meta( $term_id, '_heb_pp_term_lang_map', $this->sanitize_lang_map( $body['lang_map'] ) );
+		}
+
+		$term_link = get_term_link( $term_id, $taxonomy );
+		return rest_ensure_response(
+			[
+				'success'  => true,
+				'term_id'  => $term_id,
+				'created'  => 0 === $existing_id,
+				'edit_url' => admin_url( 'term.php?taxonomy=' . rawurlencode( $taxonomy ) . '&tag_ID=' . $term_id ),
+				'url'      => is_wp_error( $term_link ) ? '' : (string) $term_link,
+			]
+		);
+	}
+
+	/**
+	 * POST /sync-term-lang-map — Hub 广播 term 多语言矩阵。
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function rest_sync_term_lang_map( $request ) {
+		$secret = self::get_secret();
+		if ( '' === $secret ) {
+			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		if ( ! $this->rate_limit_ok() ) {
+			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts. Try again later.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) ) {
+			$body = [];
+		}
+		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			$this->rate_limit_bump();
+			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+
+		$taxonomy       = isset( $body['taxonomy'] ) ? sanitize_key( (string) $body['taxonomy'] ) : '';
+		$source_term_id = isset( $body['source_term_id'] ) ? (int) $body['source_term_id'] : 0;
+		$source_site    = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+		$lang_map       = isset( $body['lang_map'] ) && is_array( $body['lang_map'] ) ? $this->sanitize_lang_map( $body['lang_map'] ) : [];
+
+		if ( '' === $taxonomy || ! taxonomy_exists( $taxonomy ) || $source_term_id <= 0 || '' === $source_site ) {
+			return new \WP_Error( 'heb_pub_bad_payload', __( 'Bad payload.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+		}
+		if ( ! in_array( $taxonomy, self::allowed_taxonomies(), true ) ) {
+			return new \WP_Error( 'heb_pub_forbidden_taxonomy', __( 'Taxonomy is not allowed for import.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+
+		$term_id = $this->find_term_by_source( $taxonomy, $source_term_id, $source_site );
+		if ( $term_id <= 0 ) {
+			return rest_ensure_response( [ 'success' => true, 'updated' => false ] );
+		}
+		update_term_meta( $term_id, '_heb_pp_term_lang_map', $lang_map );
+		return rest_ensure_response( [ 'success' => true, 'updated' => true ] );
+	}
+
+	/**
+	 * 按 source_term_id + source_site 反查本地 term。
+	 *
+	 * @param string $taxonomy   Taxonomy.
+	 * @param int    $source_id  Source term id.
+	 * @param string $source_host Source site host.
+	 * @return int
+	 */
+	private function find_term_by_source( $taxonomy, $source_id, $source_host ) {
+		$terms = get_terms(
+			[
+				'taxonomy'   => $taxonomy,
+				'hide_empty' => false,
+				'number'     => 1,
+				'fields'     => 'ids',
+				'meta_query' => [
+					'relation' => 'AND',
+					[ 'key' => '_heb_pp_source_term_id', 'value' => (int) $source_id ],
+					[ 'key' => '_heb_pp_source_site', 'value' => $source_host ],
+				],
+			]
+		);
+		if ( is_wp_error( $terms ) || empty( $terms ) ) {
+			return 0;
+		}
+		return (int) $terms[0];
 	}
 
 	/**
@@ -310,7 +547,7 @@ class Heb_Product_Publisher_Receiver {
 				if ( ! taxonomy_exists( $tax ) || ! is_array( $values ) ) {
 					continue;
 				}
-				$term_ids = $this->resolve_terms( $tax, $values );
+				$term_ids = $this->resolve_terms( $tax, $values, $source_site );
 				if ( empty( $term_ids ) ) {
 					wp_set_object_terms( $post_id, [], $tax );
 				} else {
@@ -482,34 +719,91 @@ class Heb_Product_Publisher_Receiver {
 	}
 
 	/**
-	 * 把 slug 或 {slug,name,parent} 解析为本地 term_id；不存在则创建。
+	 * 把 slug / {slug,name} / {source_term_id, slug_fallback, parent_source_term_id} 解析为本地 term_id。
 	 *
-	 * @param string               $tax    Taxonomy.
-	 * @param array<int,mixed>     $values Items from payload.
+	 * 反查优先级（v3.0 起）：
+	 *  1. source_term_id + source_site meta（精确匹配，跨语言）
+	 *  2. slug fallback（向后兼容老格式 + 兼容已有英文 slug 子站 term）
+	 *  3. 都找不到 → wp_insert_term 用 source slug + name 创建
+	 *
+	 * 关键：当 source_site 是 payload 主调用方传入的（即产品/页面 payload 的 source_site）时，
+	 * 我们能给"已有英文 slug 但未关联 source_term_id"的子站 term 隐式补一条 meta，做反向链接。
+	 *
+	 * @param string                                                                                $tax         Taxonomy.
+	 * @param array<int,mixed>                                                                      $values      Items from payload.
+	 * @param string                                                                                $source_site Source site host (helps backfill mapping meta).
 	 * @return array<int,int>
 	 */
-	private function resolve_terms( $tax, array $values ) {
+	private function resolve_terms( $tax, array $values, $source_site = '' ) {
 		$ids = [];
 		foreach ( $values as $v ) {
-			$slug = '';
-			$name = '';
+			$slug             = '';
+			$name             = '';
+			$source_term_id   = 0;
+			$source_parent_id = 0;
 			if ( is_string( $v ) ) {
 				$slug = sanitize_title( $v );
 			} elseif ( is_array( $v ) ) {
-				$slug = isset( $v['slug'] ) ? sanitize_title( (string) $v['slug'] ) : '';
+				$source_term_id   = isset( $v['source_term_id'] ) ? (int) $v['source_term_id'] : 0;
+				$source_parent_id = isset( $v['source_parent_term_id'] ) ? (int) $v['source_parent_term_id'] : 0;
+				$slug             = isset( $v['slug_fallback'] )
+					? sanitize_title( (string) $v['slug_fallback'] )
+					: ( isset( $v['slug'] ) ? sanitize_title( (string) $v['slug'] ) : '' );
 				$name = isset( $v['name'] ) ? sanitize_text_field( (string) $v['name'] ) : '';
 			}
-			if ( '' === $slug ) {
+			if ( '' === $slug && $source_term_id <= 0 ) {
 				continue;
 			}
-			$term = get_term_by( 'slug', $slug, $tax );
-			if ( $term && ! is_wp_error( $term ) ) {
-				$ids[] = (int) $term->term_id;
+
+			// 1) 优先按 source_term_id meta 反查（最准）。
+			if ( $source_term_id > 0 && '' !== $source_site ) {
+				$found = $this->find_term_by_source( $tax, $source_term_id, $source_site );
+				if ( $found > 0 ) {
+					$ids[] = $found;
+					continue;
+				}
+			}
+
+			// 2) 按 slug 反查（兼容老数据 + 隐式建立 source 反向 link）。
+			if ( '' !== $slug ) {
+				$term = get_term_by( 'slug', $slug, $tax );
+				if ( $term && ! is_wp_error( $term ) ) {
+					$tid = (int) $term->term_id;
+					if ( $source_term_id > 0 && '' !== $source_site ) {
+						$existing_src = get_term_meta( $tid, '_heb_pp_source_term_id', true );
+						if ( '' === $existing_src ) {
+							update_term_meta( $tid, '_heb_pp_source_term_id', $source_term_id );
+							update_term_meta( $tid, '_heb_pp_source_site', $source_site );
+						}
+					}
+					$ids[] = $tid;
+					continue;
+				}
+			}
+
+			// 3) 创建。
+			$label = '' !== $name ? $name : $slug;
+			if ( '' === $label ) {
 				continue;
 			}
-			$insert = wp_insert_term( '' !== $name ? $name : $slug, $tax, [ 'slug' => $slug ] );
+			$insert_args = [];
+			if ( '' !== $slug ) {
+				$insert_args['slug'] = $slug;
+			}
+			if ( $source_parent_id > 0 && '' !== $source_site ) {
+				$local_parent = $this->find_term_by_source( $tax, $source_parent_id, $source_site );
+				if ( $local_parent > 0 ) {
+					$insert_args['parent'] = $local_parent;
+				}
+			}
+			$insert = wp_insert_term( $label, $tax, $insert_args );
 			if ( ! is_wp_error( $insert ) && isset( $insert['term_id'] ) ) {
-				$ids[] = (int) $insert['term_id'];
+				$tid = (int) $insert['term_id'];
+				if ( $source_term_id > 0 && '' !== $source_site ) {
+					update_term_meta( $tid, '_heb_pp_source_term_id', $source_term_id );
+					update_term_meta( $tid, '_heb_pp_source_site', $source_site );
+				}
+				$ids[] = $tid;
 			}
 		}
 		return array_values( array_unique( $ids ) );

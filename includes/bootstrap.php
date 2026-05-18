@@ -34,13 +34,18 @@ require_once __DIR__ . '/class-bulk.php';
 require_once __DIR__ . '/class-hreflang.php';
 require_once __DIR__ . '/class-page-lang-map.php';
 require_once __DIR__ . '/class-post-lock.php';
+require_once __DIR__ . '/class-term-sync.php';
+require_once __DIR__ . '/class-term-hub-ui.php';
+require_once __DIR__ . '/class-term-redirect.php';
 
-// 角色无关：任何站点都需要这些（hreflang 输出、设置 UI、更新检查、单页 hreflang 手填、日志查看）。
+// 角色无关：任何站点都需要这些（hreflang 输出、设置 UI、更新检查、单页 hreflang 手填、
+// 日志查看、term 旧 slug 301 重定向）。
 Heb_Product_Publisher_Admin_Settings::instance();
 Heb_Product_Publisher_Updater::instance();
 Heb_Product_Publisher_Hreflang::instance();
 Heb_Product_Publisher_Page_Lang_Map::instance();
 Heb_Product_Publisher_Log_Admin::instance();
+Heb_Product_Publisher_Term_Redirect::instance();
 
 // Receiver 模式：注册接收端 REST 路由 + /site-info + 子站本地锁定 UI。
 if ( Heb_Product_Publisher_Admin_Settings::is_receiver_mode() ) {
@@ -49,11 +54,12 @@ if ( Heb_Product_Publisher_Admin_Settings::is_receiver_mode() ) {
 	Heb_Product_Publisher_Post_Lock::instance();
 }
 
-// Hub 模式：分发 metabox、批量分发、产品列表列、source/translator 装载。
+// Hub 模式：分发 metabox、批量分发、产品列表列、term 分发 UI、source/translator 装载。
 if ( Heb_Product_Publisher_Admin_Settings::is_hub_mode() ) {
 	Heb_Product_Publisher_Hub_UI::instance();
 	Heb_Product_Publisher_Product_Columns::instance();
 	Heb_Product_Publisher_Bulk::instance();
+	Heb_Product_Publisher_Term_Hub_UI::instance();
 }
 
 // 兜底：首次启用后访问管理页自动建表。

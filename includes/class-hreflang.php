@@ -16,7 +16,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class Heb_Product_Publisher_Hreflang {
 
-	const META_LANG_MAP = '_heb_pp_lang_map';
+	const META_LANG_MAP      = '_heb_pp_lang_map';
+	const TERM_META_LANG_MAP = '_heb_pp_term_lang_map';
 
 	/** @var self|null */
 	private static $instance = null;
@@ -45,19 +46,27 @@ class Heb_Product_Publisher_Hreflang {
 		if ( ! Heb_Product_Publisher_Admin_Settings::hreflang_enabled() ) {
 			return;
 		}
-		if ( ! is_singular() ) {
+
+		$map = [];
+		if ( is_singular() ) {
+			$post = get_queried_object();
+			if ( ! $post instanceof \WP_Post ) {
+				return;
+			}
+			if ( 'publish' !== $post->post_status ) {
+				return;
+			}
+			$map = self::collect_map_for_post( $post );
+		} elseif ( is_tax() || is_category() || is_tag() ) {
+			$term = get_queried_object();
+			if ( ! $term instanceof \WP_Term ) {
+				return;
+			}
+			$map = self::collect_map_for_term( $term );
+		} else {
 			return;
 		}
 
-		$post = get_queried_object();
-		if ( ! $post instanceof \WP_Post ) {
-			return;
-		}
-		if ( 'publish' !== $post->post_status ) {
-			return;
-		}
-
-		$map = self::collect_map_for_post( $post );
 		if ( count( $map ) < 2 ) {
 			return;
 		}
@@ -116,6 +125,36 @@ class Heb_Product_Publisher_Hreflang {
 			$map[ $current_lang ] = $current_url;
 		}
 
+		return $map;
+	}
+
+	/**
+	 * 收集当前 term 的 lang_map 并做规范化、自身兜底。
+	 *
+	 * 与 collect_map_for_post 同样的 "self-contained" 原则：
+	 * lang_map 里若没有当前 lang，会自动补上当前 term archive URL。
+	 *
+	 * @param \WP_Term $term Current term.
+	 * @return array<string,string>
+	 */
+	public static function collect_map_for_term( \WP_Term $term ) {
+		$raw = get_term_meta( $term->term_id, self::TERM_META_LANG_MAP, true );
+		$map = [];
+		if ( is_array( $raw ) ) {
+			foreach ( $raw as $lang => $url ) {
+				$lang = self::normalize_lang( (string) $lang );
+				$url  = esc_url_raw( (string) $url );
+				if ( '' === $lang || '' === $url ) {
+					continue;
+				}
+				$map[ $lang ] = $url;
+			}
+		}
+		$current_lang = self::current_site_lang();
+		$current_url  = get_term_link( $term );
+		if ( '' !== $current_lang && ! is_wp_error( $current_url ) && is_string( $current_url ) && '' !== $current_url && ! isset( $map[ $current_lang ] ) ) {
+			$map[ $current_lang ] = $current_url;
+		}
 		return $map;
 	}
 

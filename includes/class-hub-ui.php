@@ -72,8 +72,24 @@ class Heb_Product_Publisher_Hub_UI {
 		wp_enqueue_style( 'heb-pp-hub', HEB_PP_URL . 'assets/css/hub.css', [], HEB_PP_VERSION );
 		wp_enqueue_script( 'heb-pp-hub', HEB_PP_URL . 'assets/js/hub.js', [ 'jquery', 'wp-i18n' ], HEB_PP_VERSION, true );
 
-		$post_id      = isset( $_GET['post'] ) ? (int) $_GET['post'] : 0;
-		$source_slugs = $post_id ? Heb_Product_Publisher_Sync::get_term_slugs_map( $post_id ) : [];
+		$post_id    = isset( $_GET['post'] ) ? (int) $_GET['post'] : 0;
+		$source_map = $post_id ? Heb_Product_Publisher_Sync::get_term_slugs_map( $post_id ) : [];
+
+		// 前端只关心 slug 字符串数组（用来预选目标站对应分类）。从 v3.0 的对象数组里抽出 slug。
+		$source_slugs_flat = [];
+		foreach ( $source_map as $tax => $rows ) {
+			$slugs = [];
+			foreach ( (array) $rows as $row ) {
+				if ( is_array( $row ) && isset( $row['slug_fallback'] ) ) {
+					$slugs[] = (string) $row['slug_fallback'];
+				} elseif ( is_string( $row ) ) {
+					$slugs[] = $row;
+				}
+			}
+			if ( ! empty( $slugs ) ) {
+				$source_slugs_flat[ $tax ] = array_values( array_unique( $slugs ) );
+			}
+		}
 
 		wp_localize_script(
 			'heb-pp-hub',
@@ -81,7 +97,7 @@ class Heb_Product_Publisher_Hub_UI {
 			[
 				'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
 				'nonce'        => wp_create_nonce( self::NONCE_ACTION ),
-				'sourceSlugs'  => (object) $source_slugs,
+				'sourceSlugs'  => (object) $source_slugs_flat,
 				'i18n'         => [
 					'fetching'      => __( '获取目标站点信息中…', 'heb-product-publisher' ),
 					'translating'   => __( '翻译中，请稍候…', 'heb-product-publisher' ),
