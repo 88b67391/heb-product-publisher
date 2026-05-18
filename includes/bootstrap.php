@@ -2,13 +2,15 @@
 /**
  * HEB Product Publisher 引导文件。
  *
- * 单插件双角色：
- *  - Hub 端（主站）：在产品编辑页选择目标站点 → OpenRouter 翻译 → 推送 /import-product
- *  - Receiver 端（语言站）：暴露 /site-info（locale + taxonomies）与 /import-product
+ * 单插件双角色（自 v2.7.0 起显式声明，参见 `Heb_Product_Publisher_Admin_Settings::site_role()`）：
+ *  - Hub 端（主站）：在产品/页面编辑页选择目标站点 → OpenRouter 翻译 → 推送 /import-product
+ *  - Receiver 端（语言站）：暴露 /site-info（locale + taxonomies）与 /import-product 等
+ *  - Auto：按配置自动推断（向后兼容老安装）
  *
  * 可在 wp-config.php 中预定义（优先级高于后台选项）：
- *   define( 'HEB_PUBLISHER_RECEIVER_SECRET', '...' );   // 本站作为接收端时的共享密钥
+ *   define( 'HEB_PUBLISHER_RECEIVER_SECRET', '...' );      // 本站作为接收端时的共享密钥
  *   define( 'HEB_PP_OPENROUTER_API_KEY',    'sk-or-...' ); // OpenRouter key
+ *   define( 'HEB_PP_SITE_ROLE',             'hub' );       // 强制锁定角色：hub / receiver / auto
  *
  * @package HebProductPublisher
  */
@@ -32,16 +34,25 @@ require_once __DIR__ . '/class-bulk.php';
 require_once __DIR__ . '/class-hreflang.php';
 require_once __DIR__ . '/class-page-lang-map.php';
 
-Heb_Product_Publisher_Receiver::instance();
-Heb_Product_Publisher_Site_Info::instance();
+// 角色无关：任何站点都需要这些（hreflang 输出、设置 UI、更新检查、单页 hreflang 手填、日志查看）。
 Heb_Product_Publisher_Admin_Settings::instance();
-Heb_Product_Publisher_Hub_UI::instance();
 Heb_Product_Publisher_Updater::instance();
-Heb_Product_Publisher_Log_Admin::instance();
-Heb_Product_Publisher_Product_Columns::instance();
-Heb_Product_Publisher_Bulk::instance();
 Heb_Product_Publisher_Hreflang::instance();
 Heb_Product_Publisher_Page_Lang_Map::instance();
+Heb_Product_Publisher_Log_Admin::instance();
+
+// Receiver 模式：注册接收端 REST 路由 + /site-info。
+if ( Heb_Product_Publisher_Admin_Settings::is_receiver_mode() ) {
+	Heb_Product_Publisher_Receiver::instance();
+	Heb_Product_Publisher_Site_Info::instance();
+}
+
+// Hub 模式：分发 metabox、批量分发、产品列表列、source/translator 装载。
+if ( Heb_Product_Publisher_Admin_Settings::is_hub_mode() ) {
+	Heb_Product_Publisher_Hub_UI::instance();
+	Heb_Product_Publisher_Product_Columns::instance();
+	Heb_Product_Publisher_Bulk::instance();
+}
 
 // 兜底：首次启用后访问管理页自动建表。
 add_action(

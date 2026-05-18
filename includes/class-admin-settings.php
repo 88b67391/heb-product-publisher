@@ -22,9 +22,15 @@ class Heb_Product_Publisher_Admin_Settings {
 	const OPT_GITHUB_REPO      = 'heb_pp_github_repo';
 	const OPT_HREFLANG_ENABLED = 'heb_pp_hreflang_enabled';
 	const OPT_HREFLANG_XDEFAULT = 'heb_pp_hreflang_xdefault';
+	const OPT_SITE_ROLE        = 'heb_pp_site_role';
+
+	const ROLE_HUB      = 'hub';
+	const ROLE_RECEIVER = 'receiver';
+	const ROLE_AUTO     = 'auto';
 
 	const DEFAULT_MODEL              = 'openai/gpt-4o-mini';
 	const DEFAULT_HREFLANG_XDEFAULT  = 'en';
+	const DEFAULT_SITE_ROLE          = self::ROLE_AUTO;
 
 	/** @var self|null */
 	private static $instance = null;
@@ -89,6 +95,69 @@ class Heb_Product_Publisher_Admin_Settings {
 			return Heb_Product_Publisher_Hreflang::normalize_lang( $raw );
 		}
 		return strtolower( trim( $raw ) );
+	}
+
+	/**
+	 * 本站显式声明的角色：hub / receiver / auto。
+	 *
+	 * auto 时：按配置自动推断（Hub = 有远端站点 + OpenRouter key；Receiver = 有 receiver_secret）。
+	 * hub / receiver 时：完全按显式选择启用 / 隐藏对应能力，避免分站被误配成 Hub 造成反向污染。
+	 *
+	 * 可通过 wp-config 常量 `HEB_PP_SITE_ROLE` 强制覆盖（部署时锁死角色）。
+	 *
+	 * @return string  one of: hub / receiver / auto.
+	 */
+	public static function site_role() {
+		if ( defined( 'HEB_PP_SITE_ROLE' ) && is_string( HEB_PP_SITE_ROLE ) ) {
+			$forced = strtolower( trim( HEB_PP_SITE_ROLE ) );
+			if ( in_array( $forced, [ self::ROLE_HUB, self::ROLE_RECEIVER, self::ROLE_AUTO ], true ) ) {
+				return $forced;
+			}
+		}
+		$v = get_option( self::OPT_SITE_ROLE, self::DEFAULT_SITE_ROLE );
+		$v = is_string( $v ) ? strtolower( trim( $v ) ) : '';
+		if ( ! in_array( $v, [ self::ROLE_HUB, self::ROLE_RECEIVER, self::ROLE_AUTO ], true ) ) {
+			return self::DEFAULT_SITE_ROLE;
+		}
+		return $v;
+	}
+
+	/**
+	 * 当前是否启用 Hub 能力（分发 metabox、远端站点列表、Bootstrap、Dashboard、批量分发）。
+	 *
+	 * @return bool
+	 */
+	public static function is_hub_mode() {
+		$role = self::site_role();
+		if ( self::ROLE_HUB === $role ) {
+			return true;
+		}
+		if ( self::ROLE_RECEIVER === $role ) {
+			return false;
+		}
+		// auto：有远端站点（不管 OpenRouter key 是否填，至少能跑无翻译分发）即视为 Hub。
+		return ! empty( self::remote_sites() );
+	}
+
+	/**
+	 * 当前是否启用 Receiver 能力（REST 端点 /import-* / /sync-* / /site-info / /lookup-by-source）。
+	 *
+	 * @return bool
+	 */
+	public static function is_receiver_mode() {
+		$role = self::site_role();
+		if ( self::ROLE_RECEIVER === $role ) {
+			return true;
+		}
+		if ( self::ROLE_HUB === $role ) {
+			return false;
+		}
+		// auto：有 receiver_secret 才启用接收端，避免空 secret 暴露公开路由。
+		if ( defined( 'HEB_PUBLISHER_RECEIVER_SECRET' ) && is_string( HEB_PUBLISHER_RECEIVER_SECRET ) && '' !== HEB_PUBLISHER_RECEIVER_SECRET ) {
+			return true;
+		}
+		$secret = get_option( self::OPT_RECEIVER_SECRET, '' );
+		return is_string( $secret ) && '' !== $secret;
 	}
 
 	/**
@@ -177,6 +246,27 @@ class Heb_Product_Publisher_Admin_Settings {
 				'default'           => self::DEFAULT_HREFLANG_XDEFAULT,
 			]
 		);
+		register_setting(
+			'heb_pp_settings',
+			self::OPT_SITE_ROLE,
+			[
+				'type'              => 'string',
+				'sanitize_callback' => [ $this, 'sanitize_site_role' ],
+				'default'           => self::DEFAULT_SITE_ROLE,
+			]
+		);
+	}
+
+	/**
+	 * @param mixed $raw Raw posted value.
+	 * @return string
+	 */
+	public function sanitize_site_role( $raw ) {
+		$raw = is_string( $raw ) ? strtolower( trim( $raw ) ) : '';
+		if ( in_array( $raw, [ self::ROLE_HUB, self::ROLE_RECEIVER, self::ROLE_AUTO ], true ) ) {
+			return $raw;
+		}
+		return self::DEFAULT_SITE_ROLE;
 	}
 
 	/**
@@ -363,6 +453,13 @@ class Heb_Product_Publisher_Admin_Settings {
 		$hreflang_on        = self::hreflang_enabled();
 		$hreflang_xdefault  = (string) get_option( self::OPT_HREFLANG_XDEFAULT, self::DEFAULT_HREFLANG_XDEFAULT );
 
+		$site_role        = self::site_role();
+		$role_forced      = defined( 'HEB_PP_SITE_ROLE' );
+		$is_hub_mode      = self::is_hub_mode();
+		$is_receiver_mode = self::is_receiver_mode();
+		$show_hub         = self::ROLE_RECEIVER !== $site_role;
+		$show_receiver    = self::ROLE_HUB !== $site_role;
+
 		?>
 		<div class="wrap heb-pp-settings">
 			<h1><?php esc_html_e( 'HEB Publisher', 'heb-product-publisher' ); ?></h1>
@@ -373,6 +470,62 @@ class Heb_Product_Publisher_Admin_Settings {
 			<form method="post" action="options.php" id="heb-pp-settings-form">
 				<?php settings_fields( 'heb_pp_settings' ); ?>
 
+				<h2 class="title"><?php esc_html_e( '⓪ 本站角色', 'heb-product-publisher' ); ?></h2>
+				<?php if ( $role_forced ) : ?>
+					<div class="notice notice-info inline">
+						<p>
+							<?php
+							printf(
+								/* translators: %s: role code from wp-config */
+								esc_html__( '当前角色由 wp-config.php 中的 HEB_PP_SITE_ROLE 强制锁定为 %s。', 'heb-product-publisher' ),
+								'<code>' . esc_html( $site_role ) . '</code>'
+							);
+							?>
+						</p>
+					</div>
+				<?php endif; ?>
+				<table class="form-table" role="presentation">
+					<tr>
+						<th scope="row"><?php esc_html_e( '角色', 'heb-product-publisher' ); ?></th>
+						<td>
+							<fieldset <?php echo $role_forced ? 'disabled' : ''; ?>>
+								<label>
+									<input type="radio" name="<?php echo esc_attr( self::OPT_SITE_ROLE ); ?>" value="<?php echo esc_attr( self::ROLE_AUTO ); ?>" <?php checked( $site_role, self::ROLE_AUTO ); ?> />
+									<?php esc_html_e( '自动（按配置推断，向后兼容）', 'heb-product-publisher' ); ?>
+									<span class="description">
+										&middot;
+										<?php
+										if ( $is_hub_mode && $is_receiver_mode ) {
+											esc_html_e( '当前推断：Hub + Receiver', 'heb-product-publisher' );
+										} elseif ( $is_hub_mode ) {
+											esc_html_e( '当前推断：Hub（主站）', 'heb-product-publisher' );
+										} elseif ( $is_receiver_mode ) {
+											esc_html_e( '当前推断：Receiver（分站）', 'heb-product-publisher' );
+										} else {
+											esc_html_e( '当前推断：未配置（既不分发也不接收）', 'heb-product-publisher' );
+										}
+										?>
+									</span>
+								</label><br />
+								<label>
+									<input type="radio" name="<?php echo esc_attr( self::OPT_SITE_ROLE ); ?>" value="<?php echo esc_attr( self::ROLE_HUB ); ?>" <?php checked( $site_role, self::ROLE_HUB ); ?> />
+									<?php esc_html_e( 'Hub（主站，仅分发）', 'heb-product-publisher' ); ?>
+									<span class="description">&middot; <?php esc_html_e( '显示远端列表 / OpenRouter / Bootstrap / Dashboard / 批量分发；不暴露接收端 REST 路由', 'heb-product-publisher' ); ?></span>
+								</label><br />
+								<label>
+									<input type="radio" name="<?php echo esc_attr( self::OPT_SITE_ROLE ); ?>" value="<?php echo esc_attr( self::ROLE_RECEIVER ); ?>" <?php checked( $site_role, self::ROLE_RECEIVER ); ?> />
+									<?php esc_html_e( 'Receiver（分站，仅接收）', 'heb-product-publisher' ); ?>
+									<span class="description">&middot; <?php esc_html_e( '仅显示接收密钥；隐藏所有 Hub UI 以防误操作把分站当主站', 'heb-product-publisher' ); ?></span>
+								</label>
+							</fieldset>
+							<p class="description" style="margin-top:8px;">
+								<?php esc_html_e( '部署到生产建议显式选择角色（不要 auto），可在 wp-config.php 中定义 HEB_PP_SITE_ROLE 锁死。hreflang 输出与单页 hreflang metabox 在任何角色下都启用。', 'heb-product-publisher' ); ?>
+							</p>
+						</td>
+					</tr>
+				</table>
+
+				<?php if ( $show_receiver ) : ?>
 				<h2 class="title"><?php esc_html_e( '① Receiver（本站作为接收端）', 'heb-product-publisher' ); ?></h2>
 				<?php if ( $receiver_from_config ) : ?>
 					<div class="notice notice-info inline">
@@ -402,6 +555,9 @@ class Heb_Product_Publisher_Admin_Settings {
 					</tr>
 				</table>
 
+				<?php endif; // show_receiver ?>
+
+				<?php if ( $show_hub ) : ?>
 				<h2 class="title"><?php esc_html_e( '② Hub（主站分发 & 翻译）', 'heb-product-publisher' ); ?></h2>
 				<table class="form-table" role="presentation">
 					<tr>
@@ -484,6 +640,7 @@ class Heb_Product_Publisher_Admin_Settings {
 					<button type="button" class="button" id="heb-pp-test-sites"><?php esc_html_e( '测试全部连接', 'heb-product-publisher' ); ?></button>
 				</p>
 				<div id="heb-pp-test-result" class="heb-pp-test-result" aria-live="polite"></div>
+				<?php endif; // show_hub ?>
 
 				<h2 class="title"><?php esc_html_e( '④ Hreflang（多语言 SEO 标签）', 'heb-product-publisher' ); ?></h2>
 				<p class="description">
