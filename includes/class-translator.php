@@ -28,10 +28,12 @@ class Heb_Product_Publisher_Translator {
 
 	/** OpenRouter HTTP 调用超时（秒）。
 	 *
-	 * 60s 在含 HTML 的大批次下经常不够（cURL error 28）。180s 兼顾大多数模型 +
-	 * 防止永久卡死。可通过 filter `heb_pp_translator_http_timeout` 调整。
+	 * GPT-5 / Claude Opus 等慢模型 + 长 content（10KB+）单批可能 3-5 分钟。
+	 * 300s 默认对绝大多数 OpenRouter 模型都够；可通过 filter
+	 * `heb_pp_translator_http_timeout` 调到更长（最长 600s，再长 nginx /
+	 * php-fpm 会先砍 socket）。
 	 */
-	const HTTP_TIMEOUT = 180;
+	const HTTP_TIMEOUT = 300;
 
 	/** 单批失败时最多重试次数（不含首次）。 */
 	const MAX_RETRIES = 2;
@@ -174,6 +176,24 @@ class Heb_Product_Publisher_Translator {
 	const SEGMENT_DELIM = '::seg';
 
 	/**
+	 * 是否启用长 HTML 自动切片。
+	 *
+	 * 默认 false：保留完整内容上下文给翻译模型（术语一致性最好），但要求模型
+	 * 足够快（推荐 Gemini 2.5 Flash / GPT-4o-mini / Haiku），否则 long content
+	 * 单批 LLM 输出耗时会撞 HTTP timeout。
+	 *
+	 * 用快模型时关闭切片 = 整篇一次翻译，保完整度；
+	 * 用慢模型（Claude Sonnet/Opus/GPT-5）时启用切片 = 单批小段不易超时。
+	 *
+	 * 可通过 filter 'heb_pp_translator_enable_html_split' 切换。
+	 *
+	 * @return bool
+	 */
+	public static function html_split_enabled() {
+		return (bool) apply_filters( 'heb_pp_translator_enable_html_split', false );
+	}
+
+	/**
 	 * 递归收集可翻译字符串到 $out。
 	 *
 	 * @param mixed                $value 当前值。
@@ -202,14 +222,15 @@ class Heb_Product_Publisher_Translator {
 			return;
 		}
 
-		// 长 HTML 字符串自动按 block 边界拆段，避免单批 LLM 输出 > 60s 触发 cURL 超时
-		// 并提升 HTML 保真度（小段 LLM 更难丢标签）。
-		$segments = $this->maybe_split_html( $value );
-		if ( count( $segments ) > 1 ) {
-			foreach ( $segments as $i => $seg ) {
-				$out[ $path . self::SEGMENT_DELIM . $i ] = $seg;
+		// 长 HTML 字符串可选切片（默认关闭）；启用后按 block 边界拆段保完整度。
+		if ( self::html_split_enabled() ) {
+			$segments = $this->maybe_split_html( $value );
+			if ( count( $segments ) > 1 ) {
+				foreach ( $segments as $i => $seg ) {
+					$out[ $path . self::SEGMENT_DELIM . $i ] = $seg;
+				}
+				return;
 			}
-			return;
 		}
 
 		$out[ $path ] = $value;

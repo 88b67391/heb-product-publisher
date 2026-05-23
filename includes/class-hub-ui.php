@@ -303,6 +303,9 @@ class Heb_Product_Publisher_Hub_UI {
 
 	/**
 	 * 翻译并分发。
+	 *
+	 * 整个流程包裹 try/catch：任何意料外异常（OOM / 致命 fatal / 第三方钩子抛错）
+	 * 都至少落一条日志，避免"分发失败连日志都没"的静默状况。
 	 */
 	public function ajax_distribute() {
 		if ( ! current_user_can( 'edit_posts' ) ) {
@@ -327,7 +330,13 @@ class Heb_Product_Publisher_Hub_UI {
 			: [];
 		$site_overrides = $this->sanitize_site_overrides( $raw_overrides );
 
-		$basepayload = Heb_Product_Publisher_Sync::build_payload( $post_id );
+		try {
+			$basepayload = Heb_Product_Publisher_Sync::build_payload( $post_id );
+		} catch ( \Throwable $e ) {
+			$msg = sprintf( 'build_payload threw: %s @%s:%d', $e->getMessage(), $e->getFile(), $e->getLine() );
+			$this->log_failure( $post_id, '', $msg );
+			wp_send_json_error( [ 'message' => $msg ] );
+		}
 		if ( empty( $basepayload ) ) {
 			wp_send_json_error( [ 'message' => __( '无法构造 payload（post 不存在或类型不允许分发）。', 'heb-product-publisher' ) ] );
 		}
@@ -340,12 +349,80 @@ class Heb_Product_Publisher_Hub_UI {
 			$site = Heb_Product_Publisher_Admin_Settings::get_site( $sid );
 			if ( ! $site ) {
 				$results[ $sid ] = [ 'ok' => false, 'message' => __( '未找到站点。', 'heb-product-publisher' ) ];
+				$this->log_failure( $post_id, (string) $sid, __( '未找到站点。', 'heb-product-publisher' ) );
 				continue;
 			}
-			$results[ $sid ] = $this->distribute_to_site( $post_id, $basepayload, $source_locale, $site, $site_overrides, $translator );
+
+			// 入口先落一条 "started" 日志：即使下面 OpenRouter / Receiver hang 死、
+			// 浏览器超时断开、PHP 后台继续跑，用户在日志页至少看到分发已发起。
+			$this->log_started( $post_id, $site );
+
+			try {
+				$results[ $sid ] = $this->distribute_to_site( $post_id, $basepayload, $source_locale, $site, $site_overrides, $translator );
+			} catch ( \Throwable $e ) {
+				$msg = sprintf( 'distribute_to_site threw: %s @%s:%d', $e->getMessage(), $e->getFile(), $e->getLine() );
+				$results[ $sid ] = [ 'ok' => false, 'message' => $msg, 'locale' => '' ];
+				$this->log_failure( $post_id, (string) $sid, $msg, $site );
+			}
 		}
 
 		wp_send_json_success( $results );
+	}
+
+	/**
+	 * 在分发刚开始时立即落一条日志，状态 = 'started'。
+	 * 主要价值：OpenRouter / Receiver 卡死时，浏览器看到 504/超时，用户回到
+	 * 日志页能看到"已发起"，知道流程进到哪一步（不是完全静默）。
+	 *
+	 * @param int                   $post_id Source post id.
+	 * @param array<string,string>  $site    Remote site row.
+	 * @return void
+	 */
+	private function log_started( $post_id, array $site ) {
+		if ( ! class_exists( 'Heb_Product_Publisher_Log' ) ) {
+			return;
+		}
+		$post = get_post( $post_id );
+		Heb_Product_Publisher_Log::insert(
+			[
+				'post_id'       => (int) $post_id,
+				'post_type'     => $post ? (string) $post->post_type : '',
+				'post_title'    => $post ? (string) $post->post_title : '',
+				'site_id'       => isset( $site['id'] ) ? (string) $site['id'] : '',
+				'site_label'    => isset( $site['label'] ) ? (string) $site['label'] : '',
+				'site_url'      => isset( $site['url'] ) ? (string) $site['url'] : '',
+				'status'        => 'started',
+				'message'       => __( '分发已发起，开始翻译并推送…', 'heb-product-publisher' ),
+			]
+		);
+	}
+
+	/**
+	 * 兜底失败日志（exception/无 site/build 失败等罕见路径）。
+	 *
+	 * @param int                          $post_id Post id.
+	 * @param string                       $sid     Site id.
+	 * @param string                       $message Error message.
+	 * @param array<string,string>|null    $site    Optional site row.
+	 * @return void
+	 */
+	private function log_failure( $post_id, $sid, $message, $site = null ) {
+		if ( ! class_exists( 'Heb_Product_Publisher_Log' ) ) {
+			return;
+		}
+		$post = get_post( $post_id );
+		Heb_Product_Publisher_Log::insert(
+			[
+				'post_id'    => (int) $post_id,
+				'post_type'  => $post ? (string) $post->post_type : '',
+				'post_title' => $post ? (string) $post->post_title : '',
+				'site_id'    => (string) $sid,
+				'site_label' => is_array( $site ) && isset( $site['label'] ) ? (string) $site['label'] : '',
+				'site_url'   => is_array( $site ) && isset( $site['url'] ) ? (string) $site['url'] : '',
+				'status'     => 'error',
+				'message'    => (string) $message,
+			]
+		);
 	}
 
 	/**
