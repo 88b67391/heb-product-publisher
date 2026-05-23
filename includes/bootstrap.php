@@ -46,6 +46,7 @@ require_once __DIR__ . '/class-bootstrap-tool.php';
 require_once __DIR__ . '/class-distribution-dashboard.php';
 require_once __DIR__ . '/class-delete-cascade.php';
 require_once __DIR__ . '/class-runtime.php';
+require_once __DIR__ . '/class-async-media.php';
 
 // 角色无关：任何站点都需要这些（hreflang 输出、设置 UI、更新检查、单页 hreflang 手填、
 // 日志查看、term 旧 slug 301 重定向、长任务时间/内存放开）。
@@ -57,11 +58,13 @@ Heb_Product_Publisher_Log_Admin::instance();
 Heb_Product_Publisher_Term_Redirect::instance();
 Heb_Product_Publisher_Runtime::instance();
 
-// Receiver 模式：注册接收端 REST 路由 + /site-info + 子站本地锁定 UI。
+// Receiver 模式：注册接收端 REST 路由 + /site-info + 子站本地锁定 UI +
+// Elementor 异步图片 sideload (AS hook)。
 if ( Heb_Product_Publisher_Admin_Settings::is_receiver_mode() ) {
 	Heb_Product_Publisher_Receiver::instance();
 	Heb_Product_Publisher_Site_Info::instance();
 	Heb_Product_Publisher_Post_Lock::instance();
+	Heb_Product_Publisher_Async_Media::instance();
 }
 
 // Hub 模式：分发 metabox、批量分发、产品列表列、term 分发 UI、Bootstrap、Dashboard、删除级联。

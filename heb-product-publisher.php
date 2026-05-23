@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       HEB Product Publisher
  * Plugin URI:        https://github.com/88b67391/heb-product-publisher
- * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集：显式站点角色、page+Elementor、term+AI slug、Site Bootstrap (Action Scheduler)、菜单+全局设置同步、分发管理 Dashboard、删除级联。v3.0.0-beta.2 修复长任务超时（PHP set_time_limit + HTTP 默认 300s）。
- * Version:           3.0.0-beta.2
+ * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集 + v3.1 Elementor 图片异步 sideload（子站 REST 秒级返回，后台 AS 慢慢下图，断点续传 & 自动重试），从根本上消除"图多导致超时"。
+ * Version:           3.1.0-alpha.1
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            HEB

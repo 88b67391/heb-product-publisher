@@ -162,6 +162,10 @@ class Heb_Product_Publisher_Post_Lock {
 			return;
 		}
 		$locked = '1' === (string) get_post_meta( $post->ID, self::META_LOCKED, true );
+
+		$media = class_exists( 'Heb_Product_Publisher_Async_Media' )
+			? Heb_Product_Publisher_Async_Media::progress( (int) $post->ID )
+			: [ 'pending' => 0, 'status' => 'done', 'last_run' => 0 ];
 		?>
 		<div class="notice notice-info" style="margin-top:10px;">
 			<p>
@@ -175,6 +179,31 @@ class Heb_Product_Publisher_Post_Lock {
 				}
 				?>
 			</p>
+			<?php if ( (int) $media['pending'] > 0 || 0 === strpos( (string) $media['status'], 'failed' ) ) : ?>
+				<p style="margin-top:6px;">
+					<?php if ( (int) $media['pending'] > 0 ) : ?>
+						<span style="color:#996800;">
+							<?php
+							printf(
+								/* translators: %d: number of remote images still being sideloaded */
+								esc_html__( '正在后台下载 Elementor 远端图片（剩余 %d 张），完成前页面会临时使用主站原图。', 'heb-product-publisher' ),
+								(int) $media['pending']
+							);
+							?>
+						</span>
+					<?php elseif ( 0 === strpos( (string) $media['status'], 'failed' ) ) : ?>
+						<span style="color:#b32d2e;">
+							<?php
+							printf(
+								/* translators: %s: failure reason */
+								esc_html__( '部分图片本地化失败：%s。已重试多次仍未成功，可在主站重新分发或在 Tools → Action Scheduler 手动重排。', 'heb-product-publisher' ),
+								esc_html( (string) $media['status'] )
+							);
+							?>
+						</span>
+					<?php endif; ?>
+				</p>
+			<?php endif; ?>
 		</div>
 		<?php
 	}

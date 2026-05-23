@@ -562,15 +562,25 @@ class Heb_Product_Publisher_Hub_UI {
 			return $r;
 		}
 
+		$pending_media = isset( $push['pending_media'] ) ? (int) $push['pending_media'] : 0;
+		$warns         = $translate_errors;
+		if ( $pending_media > 0 ) {
+			$warns[] = sprintf(
+				/* translators: %d: number of remote images still being downloaded asynchronously on the receiver */
+				__( '主站点已写入，子站后台正在异步下载 %d 张 Elementor 图片（不阻塞，可关闭页面）。', 'heb-product-publisher' ),
+				$pending_media
+			);
+		}
 		$r = [
-			'ok'        => true,
-			'post_id'   => isset( $push['post_id'] ) ? (int) $push['post_id'] : 0,
-			'edit_url'  => isset( $push['edit_url'] ) ? (string) $push['edit_url'] : '',
-			'permalink' => isset( $push['permalink'] ) ? (string) $push['permalink'] : '',
-			'created'   => ! empty( $push['created'] ),
-			'translate' => $translate_stats,
-			'warn'      => $translate_errors,
-			'locale'    => $target_locale,
+			'ok'            => true,
+			'post_id'       => isset( $push['post_id'] ) ? (int) $push['post_id'] : 0,
+			'edit_url'      => isset( $push['edit_url'] ) ? (string) $push['edit_url'] : '',
+			'permalink'     => isset( $push['permalink'] ) ? (string) $push['permalink'] : '',
+			'created'       => ! empty( $push['created'] ),
+			'translate'     => $translate_stats,
+			'warn'          => $warns,
+			'locale'        => $target_locale,
+			'pending_media' => $pending_media,
 		];
 		$this->record_distribution( $post_id, $site, $target_locale, $r, $translate_stats, (int) round( ( microtime( true ) - $started ) * 1000 ), $basepayload );
 		$this->refresh_lang_map( $post_id, $basepayload, $site, $target_locale, $r );

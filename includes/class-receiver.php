@@ -199,6 +199,9 @@ class Heb_Product_Publisher_Receiver {
 				if ( $since > 0 && $modified < $since ) {
 					continue;
 				}
+				$media_progress = class_exists( 'Heb_Product_Publisher_Async_Media' )
+					? Heb_Product_Publisher_Async_Media::progress( (int) $pid )
+					: [ 'pending' => 0, 'status' => 'done', 'last_run' => 0 ];
 				$posts_out[] = [
 					'post_type'        => $pt,
 					'local_id'         => (int) $pid,
@@ -210,6 +213,8 @@ class Heb_Product_Publisher_Receiver {
 					'edit_url'         => admin_url( 'post.php?post=' . $pid . '&action=edit' ),
 					'permalink'        => (string) get_permalink( $pid ),
 					'title'            => (string) get_the_title( $pid ),
+					'media_pending'    => (int) $media_progress['pending'],
+					'media_status'     => (string) $media_progress['status'],
 				];
 			}
 		}
@@ -1112,7 +1117,14 @@ class Heb_Product_Publisher_Receiver {
 			$this->apply_seo_meta( $post_id, $body['seo'] );
 		}
 
-		$this->apply_elementor_payload( $post_id, $body );
+		// Elementor data 解码现在返回"待异步 sideload 的远端图片 URL 列表"。
+		// 写完 post 主体立即 enqueue AS task 后台慢慢下图，REST 在秒级返回，
+		// 不会因为 sideload 几十张图卡住 HTTP / 触发子站 PHP 超时。
+		$pending_media = $this->apply_elementor_payload( $post_id, $body );
+		$queued        = 0;
+		if ( is_array( $pending_media ) && ! empty( $pending_media ) && class_exists( 'Heb_Product_Publisher_Async_Media' ) ) {
+			$queued = Heb_Product_Publisher_Async_Media::enqueue( $post_id, $pending_media );
+		}
 
 		if ( $source_post_id > 0 ) {
 			update_post_meta( $post_id, '_heb_publisher_source_post_id', $source_post_id );
@@ -1126,11 +1138,13 @@ class Heb_Product_Publisher_Receiver {
 
 		return rest_ensure_response(
 			[
-				'success'  => true,
-				'post_id'  => $post_id,
-				'created'  => 0 === $existing_id,
-				'edit_url' => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
-				'permalink' => get_permalink( $post_id ),
+				'success'             => true,
+				'post_id'             => $post_id,
+				'created'             => 0 === $existing_id,
+				'edit_url'            => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
+				'permalink'           => get_permalink( $post_id ),
+				'pending_media'       => $queued,
+				'pending_media_status' => $queued > 0 ? 'queued' : 'done',
 			]
 		);
 	}
@@ -1418,6 +1432,16 @@ class Heb_Product_Publisher_Receiver {
 	}
 
 	/**
+	 * 同名 public 包装：供 Async_Media (后台异步 sideload) 复用。
+	 *
+	 * @param string $url Image URL.
+	 * @return int Attachment ID or 0.
+	 */
+	public function public_sideload_url( $url ) {
+		return $this->sideload_url( $url );
+	}
+
+	/**
 	 * @param string $url Image URL.
 	 * @return int Attachment ID or 0.
 	 */
@@ -1474,40 +1498,66 @@ class Heb_Product_Publisher_Receiver {
 	 *  - { __heb_media: elementor_image, __heb_url, __heb_alt, __heb_size, __heb_source }
 	 *    → { id, url, alt, source, size }（Elementor image 兼容）
 	 *
-	 * @param mixed $value Payload fragment.
+	 * 当传入 `$pending` 数组引用时进入"异步收集"模式：遇到 elementor_image token
+	 * 不立即 sideload，而是把远端 URL 写入 $pending，并返回 { id: 0, url: <远端> }
+	 * 让前台先用远端原图渲染。后续 Async_Media AS task 完成 sideload 再替换。
+	 * ACF image (普通 image) 在任何模式下都同步 sideload（量少、影响小）。
+	 *
+	 * @param mixed              $value   Payload fragment.
+	 * @param array<string>|null &$pending 异步收集列表（按引用）。null = 同步模式。
 	 * @return mixed
 	 */
-	private function decode_acf_from_transport( $value ) {
+	private function decode_acf_from_transport( $value, &$pending = null ) {
 		if ( is_array( $value ) && isset( $value['__heb_media'], $value['__heb_url'] ) && is_string( $value['__heb_url'] ) ) {
 			$kind = (string) $value['__heb_media'];
-			$id   = $this->sideload_url( $value['__heb_url'] );
+
 			if ( 'elementor_image' === $kind ) {
+				$alt    = isset( $value['__heb_alt'] ) ? (string) $value['__heb_alt'] : '';
+				$source = isset( $value['__heb_source'] ) && '' !== $value['__heb_source'] ? (string) $value['__heb_source'] : 'library';
+				$size   = isset( $value['__heb_size'] ) ? (string) $value['__heb_size'] : '';
+				$remote = (string) $value['__heb_url'];
+
+				// 异步模式：留远端 URL + 0 id，写入 pending，AS task 后台处理。
+				if ( is_array( $pending ) ) {
+					$pending[] = $remote;
+					return [
+						'id'     => 0,
+						'url'    => $remote,
+						'alt'    => $alt,
+						'source' => $source,
+						'size'   => $size,
+					];
+				}
+
+				// 同步模式（保留以兼容老调用方）。
+				$id = $this->sideload_url( $remote );
 				if ( $id > 0 ) {
 					$url = (string) wp_get_attachment_image_url( $id, 'full' );
 					return [
 						'id'     => (int) $id,
-						'url'    => '' !== $url ? $url : (string) $value['__heb_url'],
-						'alt'    => isset( $value['__heb_alt'] ) ? (string) $value['__heb_alt'] : '',
-						'source' => isset( $value['__heb_source'] ) && '' !== $value['__heb_source'] ? (string) $value['__heb_source'] : 'library',
-						'size'   => isset( $value['__heb_size'] ) ? (string) $value['__heb_size'] : '',
+						'url'    => '' !== $url ? $url : $remote,
+						'alt'    => $alt,
+						'source' => $source,
+						'size'   => $size,
 					];
 				}
-				// Sideload 失败：保留远端 URL 作为外链兜底（Elementor 仍能渲染但无本地 attachment）。
 				return [
 					'id'     => '',
-					'url'    => (string) $value['__heb_url'],
-					'alt'    => isset( $value['__heb_alt'] ) ? (string) $value['__heb_alt'] : '',
-					'source' => isset( $value['__heb_source'] ) && '' !== $value['__heb_source'] ? (string) $value['__heb_source'] : 'library',
-					'size'   => isset( $value['__heb_size'] ) ? (string) $value['__heb_size'] : '',
+					'url'    => $remote,
+					'alt'    => $alt,
+					'source' => $source,
+					'size'   => $size,
 				];
 			}
-			// 默认 ACF image：返回 attachment ID（失败则空字符串）。
+
+			// 普通 ACF image：任何模式下都同步 sideload（量少）。
+			$id = $this->sideload_url( $value['__heb_url'] );
 			return $id > 0 ? $id : '';
 		}
 		if ( is_array( $value ) ) {
 			$out = [];
 			foreach ( $value as $k => $v ) {
-				$out[ $k ] = $this->decode_acf_from_transport( $v );
+				$out[ $k ] = $this->decode_acf_from_transport( $v, $pending );
 			}
 			return $out;
 		}
@@ -1525,12 +1575,16 @@ class Heb_Product_Publisher_Receiver {
 	 *
 	 * @param int                  $post_id Target post id.
 	 * @param array<string,mixed>  $body    REST payload.
+	 * @return array<string>       异步待 sideload 的远端图片 URL 列表（已去重）。
+	 *                             调用方应把它交给 Async_Media::enqueue() 排队。
 	 */
 	private function apply_elementor_payload( $post_id, array $body ) {
+		$pending = []; // 收集所有 elementor_image 远端 URL，REST 完后异步 sideload。
+
 		$has_data = isset( $body['elementor_data'] ) && is_array( $body['elementor_data'] ) && ! empty( $body['elementor_data'] );
 
 		if ( $has_data ) {
-			$decoded_data = $this->decode_acf_from_transport( $body['elementor_data'] );
+			$decoded_data = $this->decode_acf_from_transport( $body['elementor_data'], $pending );
 			if ( ! is_array( $decoded_data ) ) {
 				$decoded_data = [];
 			}
@@ -1541,7 +1595,7 @@ class Heb_Product_Publisher_Receiver {
 		}
 
 		if ( isset( $body['elementor_page_settings'] ) && is_array( $body['elementor_page_settings'] ) ) {
-			$settings = $this->decode_acf_from_transport( $body['elementor_page_settings'] );
+			$settings = $this->decode_acf_from_transport( $body['elementor_page_settings'], $pending );
 			if ( is_array( $settings ) ) {
 				update_post_meta( $post_id, '_elementor_page_settings', $settings );
 			}
@@ -1560,7 +1614,7 @@ class Heb_Product_Publisher_Receiver {
 			update_post_meta( $post_id, '_elementor_template_type', sanitize_text_field( $body['elementor_template_type'] ) );
 		}
 		if ( ! empty( $body['elementor_extra_meta'] ) && is_array( $body['elementor_extra_meta'] ) ) {
-			$decoded_extra = $this->decode_acf_from_transport( $body['elementor_extra_meta'] );
+			$decoded_extra = $this->decode_acf_from_transport( $body['elementor_extra_meta'], $pending );
 			if ( is_array( $decoded_extra ) ) {
 				foreach ( $decoded_extra as $meta_key => $meta_value ) {
 					if ( ! is_string( $meta_key ) || '' === $meta_key ) {
@@ -1590,5 +1644,7 @@ class Heb_Product_Publisher_Receiver {
 				}
 			}
 		}
+
+		return array_values( array_unique( array_filter( $pending, 'is_string' ) ) );
 	}
 }
