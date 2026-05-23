@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       HEB Product Publisher
  * Plugin URI:        https://github.com/88b67391/heb-product-publisher
- * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集 + v3.1 Elementor 图片异步 sideload（子站 REST 秒级返回，后台 AS 慢慢下图，断点续传 & 自动重试）+ v3.1.0-alpha.2 翻译批次细分（6000→3500 chars）/ HTTP 180s / 单批失败指数退避重试 2 次 + v3.1.0-alpha.3 HEB_PP_VERSION 改为从 plugin header 动态读，根治"升级后又提示同版本更新"的死循环。
- * Version:           3.1.0-alpha.3
+ * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集 + v3.1 Elementor 图片异步 sideload + v3.1.0-alpha.4 长 HTML 字符串自动按 block 边界切片翻译（解决整个 18KB post_content 单批塞给 LLM 必定超时的问题）。
+ * Version:           3.1.0-alpha.4
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            HEB

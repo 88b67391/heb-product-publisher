@@ -133,7 +133,16 @@ class Heb_Product_Publisher_Translator {
 		}
 
 		$stats['translated'] = count( $translated_map );
-		$new_payload         = $this->apply_strings( $payload, '', $translated_map );
+
+		// 关键：缺失的字段（翻译失败 / 跳过）用源串补齐，特别对 HTML segments：
+		// 任意 segment 缺译都用源段填，避免 apply_strings 拼回时少一节导致内容截断。
+		foreach ( $strings as $key => $src ) {
+			if ( ! isset( $translated_map[ $key ] ) ) {
+				$translated_map[ $key ] = $src;
+			}
+		}
+
+		$new_payload = $this->apply_strings( $payload, '', $translated_map );
 
 		return [ 'payload' => $new_payload, 'stats' => $stats, 'errors' => $errors ];
 	}
@@ -154,6 +163,15 @@ class Heb_Product_Publisher_Translator {
 		};
 		return $norm( $a ) === $norm( $b );
 	}
+
+	/** 长 HTML 字符串自动切片阈值（字符数）。超过则按 block 边界拆段独立翻译。 */
+	const HTML_SPLIT_THRESHOLD = 1500;
+
+	/** 切片后每段的目标上限。 */
+	const HTML_SEGMENT_TARGET = 2500;
+
+	/** Path 后缀分隔符：segment 化字符串用 "<path>::seg<i>" 形式存。 */
+	const SEGMENT_DELIM = '::seg';
 
 	/**
 	 * 递归收集可翻译字符串到 $out。
@@ -183,6 +201,17 @@ class Heb_Product_Publisher_Translator {
 		if ( ! $this->looks_translatable( $value ) ) {
 			return;
 		}
+
+		// 长 HTML 字符串自动按 block 边界拆段，避免单批 LLM 输出 > 60s 触发 cURL 超时
+		// 并提升 HTML 保真度（小段 LLM 更难丢标签）。
+		$segments = $this->maybe_split_html( $value );
+		if ( count( $segments ) > 1 ) {
+			foreach ( $segments as $i => $seg ) {
+				$out[ $path . self::SEGMENT_DELIM . $i ] = $seg;
+			}
+			return;
+		}
+
 		$out[ $path ] = $value;
 	}
 
@@ -211,10 +240,129 @@ class Heb_Product_Publisher_Translator {
 			}
 			return $out;
 		}
-		if ( is_string( $value ) && isset( $map[ $path ] ) ) {
+		if ( ! is_string( $value ) ) {
+			return $value;
+		}
+
+		// 1) 直接命中（未切片）
+		if ( isset( $map[ $path ] ) ) {
 			return $map[ $path ];
 		}
+
+		// 2) 切片命中：把 <path>::seg0 / seg1 / ... 按顺序拼回。
+		//    任意一段缺失（翻译失败）则降级用源段，保证不丢内容。
+		$prefix    = $path . self::SEGMENT_DELIM;
+		$has_seg   = false;
+		$segments  = [];
+		// 注意：必须按数字顺序而不是 map insertion 顺序，避免 batch 乱序。
+		for ( $i = 0; $i < 1000; $i++ ) {
+			$k = $prefix . $i;
+			if ( ! array_key_exists( $k, $map ) ) {
+				// 检查更高序号是否存在；不存在则结束
+				if ( $has_seg ) {
+					break;
+				}
+				return $value; // 完全没切片，返回原值
+			}
+			$has_seg    = true;
+			$segments[] = (string) $map[ $k ];
+		}
+		if ( $has_seg && ! empty( $segments ) ) {
+			return implode( '', $segments );
+		}
 		return $value;
+	}
+
+	/**
+	 * 长 HTML 字符串按 block 级标签边界拆段。
+	 *
+	 * 切分规则：
+	 *  - 仅当字符串长度 ≥ HTML_SPLIT_THRESHOLD 且含足够 block-level 闭合标签时拆
+	 *  - 在 </h1-6>、</p>、</li>、</table>、</figure>、</ul>、</ol>、</div>、
+	 *    </section>、</article>、</blockquote> 之后切
+	 *  - 相邻短段合并直到接近 HTML_SEGMENT_TARGET，避免碎太细导致 batch 数量过多
+	 *  - 不破坏标签结构：lookbehind 切分点固定在闭合标签的右括号之后
+	 *
+	 * @param string $s Source string.
+	 * @return array<int,string> 1+ 个 segments；长度为 1 表示不拆。
+	 */
+	private function maybe_split_html( $s ) {
+		$len = strlen( $s );
+		if ( $len < self::HTML_SPLIT_THRESHOLD ) {
+			return [ $s ];
+		}
+		// 标签密度太低：很可能是普通长段落，不拆（避免破坏纯文本）。
+		if ( substr_count( $s, '</' ) < 4 ) {
+			return [ $s ];
+		}
+
+		// 在 block-level 闭合标签后切；用 lookbehind 保证切点在 ">"  之后。
+		$pieces = preg_split(
+			'~(?<=</(?:h[1-6]|p|li|table|figure|ul|ol|div|section|article|blockquote)>)~i',
+			$s
+		);
+		if ( ! is_array( $pieces ) || count( $pieces ) < 2 ) {
+			return [ $s ];
+		}
+
+		// 合并相邻短段：单段目标 ≈ HTML_SEGMENT_TARGET。
+		$merged  = [];
+		$current = '';
+		foreach ( $pieces as $piece ) {
+			$piece = (string) $piece;
+			if ( '' === $piece ) {
+				continue;
+			}
+			if ( '' === $current ) {
+				$current = $piece;
+				continue;
+			}
+			if ( strlen( $current ) + strlen( $piece ) > self::HTML_SEGMENT_TARGET ) {
+				$merged[]  = $current;
+				$current   = $piece;
+			} else {
+				$current .= $piece;
+			}
+		}
+		if ( '' !== $current ) {
+			$merged[] = $current;
+		}
+
+		// 极端情况单 piece 仍超大：再按 </p> / </li> 二次切；仍不行就放原值。
+		$final = [];
+		foreach ( $merged as $seg ) {
+			if ( strlen( $seg ) <= self::HTML_SEGMENT_TARGET * 1.5 ) {
+				$final[] = $seg;
+				continue;
+			}
+			$sub = preg_split( '~(?<=</(?:p|li|td|th)>)~i', $seg );
+			if ( ! is_array( $sub ) || count( $sub ) < 2 ) {
+				$final[] = $seg; // 没法再切就接受这段大的
+				continue;
+			}
+			$cur = '';
+			foreach ( $sub as $part ) {
+				$part = (string) $part;
+				if ( '' === $part ) {
+					continue;
+				}
+				if ( '' === $cur ) {
+					$cur = $part;
+					continue;
+				}
+				if ( strlen( $cur ) + strlen( $part ) > self::HTML_SEGMENT_TARGET ) {
+					$final[] = $cur;
+					$cur     = $part;
+				} else {
+					$cur .= $part;
+				}
+			}
+			if ( '' !== $cur ) {
+				$final[] = $cur;
+			}
+		}
+
+		return count( $final ) > 1 ? array_values( $final ) : [ $s ];
 	}
 
 	/**
