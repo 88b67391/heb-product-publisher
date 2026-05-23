@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       HEB Product Publisher
  * Plugin URI:        https://github.com/88b67391/heb-product-publisher
- * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集 + v3.1 Elementor 图片异步 sideload + v3.1.0-alpha.5 切片默认关闭（保完整度，需配快模型如 Gemini Flash / GPT-4o-mini）/ OpenRouter HTTP timeout 300s 兼容慢模型（GPT-5/Claude Opus）/ ajax_distribute 入口立即写 started 日志 + 全局 try/catch 兜底，杜绝"分发失败连日志都没"的静默状况。
- * Version:           3.1.0-alpha.5
+ * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集 + v3.1 Elementor 图片异步 sideload + v3.1.0-alpha.6 显式 max_tokens（根据 batch 大小动态算 1024-16384），杜绝 GPT-5 等模型按 65536 上下文上限预估成本导致的"余额不足 HTTP 402"批量拒绝；HTTP 402/401 给友好错误提示；修正重试次数显示。
+ * Version:           3.1.0-alpha.6
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            HEB

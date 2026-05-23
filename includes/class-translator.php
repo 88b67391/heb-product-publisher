@@ -531,11 +531,13 @@ class Heb_Product_Publisher_Translator {
 		}
 
 		$last_err = null;
+		$retried  = 0;
 		for ( $attempt = 0; $attempt <= $max_retries; $attempt++ ) {
 			if ( $attempt > 0 ) {
 				// 指数退避：5s, 15s, 45s... 给 OpenRouter 端短暂喘息。
 				$delay = (int) min( 60, 5 * pow( 3, $attempt - 1 ) );
 				sleep( $delay );
+				$retried = $attempt;
 			}
 
 			$result = $this->call_openrouter( $batch, $src, $dst, $api_key );
@@ -547,7 +549,8 @@ class Heb_Product_Publisher_Translator {
 			$code     = (string) $result->get_error_code();
 			$msg      = (string) $result->get_error_message();
 
-			// 4xx 类（HTTP 400/401/403/404）不重试 —— 模型不存在 / key 失效，重试也是白费。
+			// 4xx 类（HTTP 400/401/402/403/404）不重试 —— 模型不存在 / key 失效 /
+			// 余额不够（402）/ 权限拒绝 / 输入超限，重试也是白费。
 			if ( 'heb_pp_openrouter_http' === $code && preg_match( '/HTTP\s+4\d\d/i', $msg ) ) {
 				break;
 			}
@@ -555,13 +558,22 @@ class Heb_Product_Publisher_Translator {
 		}
 
 		if ( $last_err instanceof \WP_Error ) {
-			// 增强报错可读性：标注是哪一批、重试了几次。
+			// 增强报错可读性：标注是哪一批、实际重试次数。HTTP 402（余额不足）单独
+			// 给一个友好提示，免得用户对着 OpenRouter 原始 JSON 摸不着头脑。
+			$orig = $last_err->get_error_message();
+			$hint = '';
+			if ( false !== stripos( $orig, 'HTTP 402' ) || false !== stripos( $orig, 'requires more credits' ) ) {
+				$hint = __( ' [余额不足：到 OpenRouter → Settings → Credits 充值，或换便宜的模型如 google/gemini-2.5-flash]', 'heb-product-publisher' );
+			} elseif ( false !== stripos( $orig, 'HTTP 401' ) || false !== stripos( $orig, 'HTTP 403' ) ) {
+				$hint = __( ' [API key 无效或被拒：到 HEB Publisher 设置页检查 OpenRouter API Key]', 'heb-product-publisher' );
+			}
 			$enhanced = sprintf(
-				/* translators: 1: batch index, 2: attempts count, 3: original error */
-				__( '翻译批次 %1$d 失败（已重试 %2$d 次）：%3$s', 'heb-product-publisher' ),
+				/* translators: 1: batch index, 2: attempts count, 3: original error, 4: hint */
+				__( '翻译批次 %1$d 失败（已重试 %2$d 次）：%3$s%4$s', 'heb-product-publisher' ),
 				max( 1, (int) $batch_index ),
-				$max_retries,
-				$last_err->get_error_message()
+				(int) $retried,
+				$orig,
+				$hint
 			);
 			return new \WP_Error( $last_err->get_error_code(), $enhanced );
 		}
@@ -594,10 +606,23 @@ class Heb_Product_Publisher_Translator {
 
 		$user = wp_json_encode( $batch, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 
+		// 动态估算 max_tokens：避免 OpenRouter 按模型 context 上限预估成本
+		// （GPT-5 默认 65536，导致账户余额不够时直接 HTTP 402 拒绝整批请求）。
+		//
+		// 估算规则：输出 tokens ≈ 输入字符数 × 1.6 ÷ 3
+		//   - ×1.6：翻译可能膨胀（中文→日文/俄文字数比英文长；HTML 标签全保留）
+		//   - ÷3：英文 1 token ≈ 3-4 chars；中文/日文 1 token ≈ 1.5-2 chars
+		//   下限 1024（短 batch 避免输出被截断），上限 16384（避免再次撞预算）。
+		$user_len   = strlen( (string) $user );
+		$est_output = (int) ceil( $user_len * 1.6 / 3 );
+		$max_tokens = max( 1024, min( 16384, $est_output ) );
+		$max_tokens = (int) apply_filters( 'heb_pp_translator_max_tokens', $max_tokens, $user_len );
+
 		$body = [
-			'model'       => $model,
-			'temperature' => 0,
-			'messages'    => [
+			'model'           => $model,
+			'temperature'     => 0,
+			'max_tokens'      => $max_tokens,
+			'messages'        => [
 				[ 'role' => 'system', 'content' => $system ],
 				[ 'role' => 'user', 'content' => $user ],
 			],
