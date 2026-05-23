@@ -606,7 +606,87 @@ class Heb_Product_Publisher_Admin_Settings {
 								class="regular-text code"
 								placeholder="<?php echo esc_attr( self::DEFAULT_MODEL ); ?>"
 							/>
-							<p class="description"><?php esc_html_e( '如 openai/gpt-4o-mini、anthropic/claude-3-haiku、google/gemini-2.0-flash-001。', 'heb-product-publisher' ); ?></p>
+							<p class="description" style="margin-bottom:6px;">
+								<?php esc_html_e( '点下方推荐模型一键填入，或手动输入 OpenRouter 模型 ID。', 'heb-product-publisher' ); ?>
+							</p>
+							<div class="heb-pp-model-picker" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">
+								<?php
+								$recommended = [
+									[
+										'id'    => 'google/gemini-2.5-flash',
+										'label' => 'Gemini 2.5 Flash',
+										'desc'  => __( '⚡ 速度极快·价格最低·B2B 翻译够用（推荐）', 'heb-product-publisher' ),
+										'tone'  => 'primary',
+									],
+									[
+										'id'    => 'openai/gpt-4o-mini',
+										'label' => 'GPT-4o mini',
+										'desc'  => __( '速度快·便宜·质量稳定', 'heb-product-publisher' ),
+										'tone'  => '',
+									],
+									[
+										'id'    => 'anthropic/claude-haiku-4.5',
+										'label' => 'Claude Haiku 4.5',
+										'desc'  => __( '速度快·中等价格·细节保留好', 'heb-product-publisher' ),
+										'tone'  => '',
+									],
+									[
+										'id'    => 'deepseek/deepseek-chat-v3.2',
+										'label' => 'DeepSeek V3.2',
+										'desc'  => __( '极便宜·中等速度·中文输出佳', 'heb-product-publisher' ),
+										'tone'  => '',
+									],
+									[
+										'id'    => 'google/gemini-2.5-pro',
+										'label' => 'Gemini 2.5 Pro',
+										'desc'  => __( '中速·高质量·价格适中', 'heb-product-publisher' ),
+										'tone'  => '',
+									],
+									[
+										'id'    => 'anthropic/claude-sonnet-4.5',
+										'label' => 'Claude Sonnet 4.5',
+										'desc'  => __( '⚠ 慢·贵·质量顶级（用于品牌文案）', 'heb-product-publisher' ),
+										'tone'  => 'warn',
+									],
+								];
+								foreach ( $recommended as $m ) :
+									$btn_class = 'button button-small';
+									if ( 'primary' === $m['tone'] ) {
+										$btn_class = 'button button-primary button-small';
+									}
+									?>
+									<button
+										type="button"
+										class="<?php echo esc_attr( $btn_class ); ?> heb-pp-model-quick"
+										data-model="<?php echo esc_attr( $m['id'] ); ?>"
+										title="<?php echo esc_attr( $m['desc'] ); ?>"
+										style="font-family:monospace;"
+									><?php echo esc_html( $m['label'] ); ?></button>
+								<?php endforeach; ?>
+							</div>
+							<p class="description" style="margin-top:8px;font-size:11px;color:#888;">
+								<?php
+								printf(
+									/* translators: %s: link to openrouter models page */
+									esc_html__( '完整模型列表见 %s。OpenRouter 余额不够时优先选 Gemini Flash 或 DeepSeek。', 'heb-product-publisher' ),
+									'<a href="https://openrouter.ai/models" target="_blank" rel="noopener">openrouter.ai/models</a>'
+								);
+								?>
+							</p>
+							<script>
+							(function(){
+								document.querySelectorAll('.heb-pp-model-quick').forEach(function(btn){
+									btn.addEventListener('click', function(e){
+										e.preventDefault();
+										var input = document.getElementById('heb_pp_openrouter_model');
+										if (input) {
+											input.value = btn.getAttribute('data-model');
+											input.focus();
+										}
+									});
+								});
+							})();
+							</script>
 						</td>
 					</tr>
 				</table>
