@@ -15,11 +15,26 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class Heb_Product_Publisher_Translator {
 
-	/** 每批字符串总字符数上限。 */
-	const BATCH_CHAR_LIMIT = 6000;
+	/** 每批字符串总字符数上限。
+	 *
+	 * 经验值：6000 字符在含大量 HTML 标签 + 慢模型（Claude/GPT-4）时常导致单批 LLM
+	 * 输出超过 60s，触发 cURL error 28。3500 让单批更小，输出更快，超时概率显著下降。
+	 * 可通过 filter `heb_pp_translator_batch_char_limit` 调整。
+	 */
+	const BATCH_CHAR_LIMIT = 3500;
 
 	/** 单条字符串超过该长度将独占一个批次。 */
-	const SOLO_CHAR_LIMIT = 5000;
+	const SOLO_CHAR_LIMIT = 3000;
+
+	/** OpenRouter HTTP 调用超时（秒）。
+	 *
+	 * 60s 在含 HTML 的大批次下经常不够（cURL error 28）。180s 兼顾大多数模型 +
+	 * 防止永久卡死。可通过 filter `heb_pp_translator_http_timeout` 调整。
+	 */
+	const HTTP_TIMEOUT = 180;
+
+	/** 单批失败时最多重试次数（不含首次）。 */
+	const MAX_RETRIES = 2;
 
 	/**
 	 * 不翻译的 key（子字段名，无论嵌套多深）：标识、slug、数字 ID、颜色、图片 token 等。
@@ -89,12 +104,23 @@ class Heb_Product_Publisher_Translator {
 			return [ 'payload' => $payload, 'stats' => $stats, 'errors' => $errors ];
 		}
 
-		$batches = $this->batch( $strings, self::BATCH_CHAR_LIMIT, self::SOLO_CHAR_LIMIT );
+		$batch_limit = (int) apply_filters( 'heb_pp_translator_batch_char_limit', self::BATCH_CHAR_LIMIT );
+		$solo_limit  = (int) apply_filters( 'heb_pp_translator_solo_char_limit', self::SOLO_CHAR_LIMIT );
+		if ( $batch_limit <= 0 ) {
+			$batch_limit = self::BATCH_CHAR_LIMIT;
+		}
+		if ( $solo_limit <= 0 ) {
+			$solo_limit = self::SOLO_CHAR_LIMIT;
+		}
+
+		$batches = $this->batch( $strings, $batch_limit, $solo_limit );
 		$stats['batches'] = count( $batches );
 
 		$translated_map = [];
+		$batch_index    = 0;
 		foreach ( $batches as $batch ) {
-			$result = $this->call_openrouter( $batch, $src_locale, $dst_locale, $api_key );
+			$batch_index++;
+			$result = $this->call_openrouter_with_retry( $batch, $src_locale, $dst_locale, $api_key, $batch_index );
 			if ( is_wp_error( $result ) ) {
 				$errors[] = $result->get_error_message();
 				continue;
@@ -319,6 +345,62 @@ class Heb_Product_Publisher_Translator {
 	}
 
 	/**
+	 * 带指数退避重试的 OpenRouter 调用。仅对网络/HTTP 5xx/超时错误重试，
+	 * 对 4xx（API key 错、模型不存在）不重试避免无意义阻塞。
+	 *
+	 * @param array<string,string> $batch       path=>text。
+	 * @param string               $src         源语言。
+	 * @param string               $dst         目标语言。
+	 * @param string               $api_key     API key.
+	 * @param int                  $batch_index 批次序号（用于日志可读性）。
+	 * @return array<string,string>|\WP_Error
+	 */
+	private function call_openrouter_with_retry( array $batch, $src, $dst, $api_key, $batch_index = 0 ) {
+		$max_retries = (int) apply_filters( 'heb_pp_translator_max_retries', self::MAX_RETRIES );
+		if ( $max_retries < 0 ) {
+			$max_retries = 0;
+		}
+
+		$last_err = null;
+		for ( $attempt = 0; $attempt <= $max_retries; $attempt++ ) {
+			if ( $attempt > 0 ) {
+				// 指数退避：5s, 15s, 45s... 给 OpenRouter 端短暂喘息。
+				$delay = (int) min( 60, 5 * pow( 3, $attempt - 1 ) );
+				sleep( $delay );
+			}
+
+			$result = $this->call_openrouter( $batch, $src, $dst, $api_key );
+			if ( ! is_wp_error( $result ) ) {
+				return $result;
+			}
+
+			$last_err = $result;
+			$code     = (string) $result->get_error_code();
+			$msg      = (string) $result->get_error_message();
+
+			// 4xx 类（HTTP 400/401/403/404）不重试 —— 模型不存在 / key 失效，重试也是白费。
+			if ( 'heb_pp_openrouter_http' === $code && preg_match( '/HTTP\s+4\d\d/i', $msg ) ) {
+				break;
+			}
+			// shape / parse 错误（模型输出格式异常）值得重试一次，可能是偶发。
+		}
+
+		if ( $last_err instanceof \WP_Error ) {
+			// 增强报错可读性：标注是哪一批、重试了几次。
+			$enhanced = sprintf(
+				/* translators: 1: batch index, 2: attempts count, 3: original error */
+				__( '翻译批次 %1$d 失败（已重试 %2$d 次）：%3$s', 'heb-product-publisher' ),
+				max( 1, (int) $batch_index ),
+				$max_retries,
+				$last_err->get_error_message()
+			);
+			return new \WP_Error( $last_err->get_error_code(), $enhanced );
+		}
+
+		return new \WP_Error( 'heb_pp_openrouter_unknown', __( '翻译批次失败（未知错误）。', 'heb-product-publisher' ) );
+	}
+
+	/**
 	 * 调用 OpenRouter Chat Completions。要求模型返回 JSON。
 	 *
 	 * @param array<string,string> $batch     path=>text。
@@ -353,10 +435,15 @@ class Heb_Product_Publisher_Translator {
 			'response_format' => [ 'type' => 'json_object' ],
 		];
 
+		$timeout = (int) apply_filters( 'heb_pp_translator_http_timeout', self::HTTP_TIMEOUT );
+		if ( $timeout < 30 ) {
+			$timeout = self::HTTP_TIMEOUT;
+		}
+
 		$response = wp_remote_post(
 			'https://openrouter.ai/api/v1/chat/completions',
 			[
-				'timeout' => 60,
+				'timeout' => $timeout,
 				'headers' => [
 					'Content-Type'  => 'application/json',
 					'Authorization' => 'Bearer ' . $api_key,

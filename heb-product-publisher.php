@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       HEB Product Publisher
  * Plugin URI:        https://github.com/88b67391/heb-product-publisher
- * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集 + v3.1 Elementor 图片异步 sideload（子站 REST 秒级返回，后台 AS 慢慢下图，断点续传 & 自动重试），从根本上消除"图多导致超时"。
- * Version:           3.1.0-alpha.1
+ * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集 + v3.1 Elementor 图片异步 sideload（子站 REST 秒级返回，后台 AS 慢慢下图，断点续传 & 自动重试）+ v3.1.0-alpha.2 翻译批次细分（6000→3500 chars）/ HTTP 180s / 单批失败指数退避重试 2 次，根治含大量 HTML 文章的 cURL error 28。
+ * Version:           3.1.0-alpha.2
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            HEB
