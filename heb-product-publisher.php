@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       HEB Product Publisher
  * Plugin URI:        https://github.com/88b67391/heb-product-publisher
- * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集 + v3.1 Elementor 图片异步 sideload（子站 REST 秒级返回，后台 AS 慢慢下图，断点续传 & 自动重试）+ v3.1.0-alpha.2 翻译批次细分（6000→3500 chars）/ HTTP 180s / 单批失败指数退避重试 2 次，根治含大量 HTML 文章的 cURL error 28。
- * Version:           3.1.0-alpha.2
+ * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集 + v3.1 Elementor 图片异步 sideload（子站 REST 秒级返回，后台 AS 慢慢下图，断点续传 & 自动重试）+ v3.1.0-alpha.2 翻译批次细分（6000→3500 chars）/ HTTP 180s / 单批失败指数退避重试 2 次 + v3.1.0-alpha.3 HEB_PP_VERSION 改为从 plugin header 动态读，根治"升级后又提示同版本更新"的死循环。
+ * Version:           3.1.0-alpha.3
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            HEB
@@ -18,10 +18,36 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'HEB_PP_VERSION', '3.0.0-beta.1' );
 define( 'HEB_PP_FILE', __FILE__ );
 define( 'HEB_PP_PATH', plugin_dir_path( __FILE__ ) );
 define( 'HEB_PP_URL', plugin_dir_url( __FILE__ ) );
+
+/**
+ * 从 plugin header 动态读取 Version，避免常量与 header 不同步导致
+ * Updater 误判（v3.1.0-alpha.2 之前因为忘记同步常量，导致"刚升级又提示
+ * 同版本更新"的死循环）。
+ *
+ * 使用 get_file_data 而非 get_plugin_data：后者必须在 admin 环境下且
+ * 会触发 plugin headers 翻译，太重；这里只读一个字段足够。
+ */
+if ( ! defined( 'HEB_PP_VERSION' ) ) {
+	$heb_pp_version = '';
+	if ( function_exists( 'get_file_data' ) ) {
+		$heb_pp_header  = get_file_data( __FILE__, [ 'Version' => 'Version' ], 'plugin' );
+		$heb_pp_version = isset( $heb_pp_header['Version'] ) ? (string) $heb_pp_header['Version'] : '';
+		unset( $heb_pp_header );
+	}
+	if ( '' === $heb_pp_version ) {
+		// 极端兜底：手动从 plugin header 解析（首次加载早于 get_file_data 时）。
+		$heb_pp_head = @file_get_contents( __FILE__, false, null, 0, 4096 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+		if ( is_string( $heb_pp_head ) && preg_match( '/^[ \t\/*#@]*Version:\s*(.+)$/mi', $heb_pp_head, $m ) ) {
+			$heb_pp_version = trim( $m[1] );
+		}
+		unset( $heb_pp_head, $m );
+	}
+	define( 'HEB_PP_VERSION', '' !== $heb_pp_version ? $heb_pp_version : '0.0.0' );
+	unset( $heb_pp_version );
+}
 
 register_activation_hook(
 	__FILE__,
