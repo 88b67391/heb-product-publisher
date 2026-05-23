@@ -141,6 +141,7 @@ class Heb_Product_Publisher_Receiver {
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function rest_manifest( $request ) {
+		Heb_Product_Publisher_Runtime::raise();
 		$secret = self::get_secret();
 		if ( '' === $secret ) {
 			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
@@ -341,6 +342,7 @@ class Heb_Product_Publisher_Receiver {
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function rest_import_menu( $request ) {
+		Heb_Product_Publisher_Runtime::raise();
 		$secret = self::get_secret();
 		if ( '' === $secret ) {
 			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
@@ -514,6 +516,7 @@ class Heb_Product_Publisher_Receiver {
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function rest_import_settings( $request ) {
+		Heb_Product_Publisher_Runtime::raise();
 		$secret = self::get_secret();
 		if ( '' === $secret ) {
 			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
@@ -661,6 +664,7 @@ class Heb_Product_Publisher_Receiver {
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function rest_import_term( $request ) {
+		Heb_Product_Publisher_Runtime::raise();
 		$secret = self::get_secret();
 		if ( '' === $secret ) {
 			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
@@ -941,6 +945,7 @@ class Heb_Product_Publisher_Receiver {
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function rest_import( $request ) {
+		Heb_Product_Publisher_Runtime::raise();
 		$secret = self::get_secret();
 		if ( '' === $secret ) {
 			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );

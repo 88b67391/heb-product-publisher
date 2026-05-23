@@ -414,7 +414,9 @@ class Heb_Product_Publisher_Admin_Settings {
 	public static function site_timeout( array $site ) {
 		$t = isset( $site['timeout'] ) ? (int) $site['timeout'] : 0;
 		if ( $t < 30 || $t > 600 ) {
-			return 180;
+			// 默认 300s：单 page payload 含 Elementor JSON + 图片 sideload，
+			// 子站处理时间常超 180s。如需更长可在站点设置里单独配置（最多 600s）。
+			return 300;
 		}
 		return $t;
 	}
@@ -770,14 +772,14 @@ class Heb_Product_Publisher_Admin_Settings {
 					type="number"
 					name="<?php echo esc_attr( $base ); ?>[timeout]"
 					value="<?php echo esc_attr( isset( $site['timeout'] ) && (int) $site['timeout'] > 0 ? (int) $site['timeout'] : '' ); ?>"
-					placeholder="180"
+					placeholder="300"
 					min="30"
 					max="600"
 					step="10"
 					class="small-text"
 				/>
 				<p class="description" style="margin:4px 0 0;font-size:11px;">
-					<?php esc_html_e( '默认 180s；图片多的内容可调到 300', 'heb-product-publisher' ); ?>
+					<?php esc_html_e( '默认 300s；大型 Elementor 页可调到 600', 'heb-product-publisher' ); ?>
 				</p>
 			</td>
 			<td>

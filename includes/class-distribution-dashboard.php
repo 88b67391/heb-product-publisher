@@ -240,6 +240,7 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 			wp_send_json_error( [ 'message' => __( '权限不足。', 'heb-product-publisher' ) ], 403 );
 		}
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
+		Heb_Product_Publisher_Runtime::raise();
 
 		$site_id = isset( $_POST['site_id'] ) ? sanitize_text_field( wp_unslash( (string) $_POST['site_id'] ) ) : '';
 		$force   = ! empty( $_POST['force'] );
@@ -277,6 +278,7 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 			wp_send_json_error( [ 'message' => __( '权限不足。', 'heb-product-publisher' ) ], 403 );
 		}
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
+		Heb_Product_Publisher_Runtime::raise();
 
 		$source_id = isset( $_POST['source_id'] ) ? (int) $_POST['source_id'] : 0;
 		$kind      = isset( $_POST['kind'] ) ? sanitize_key( (string) $_POST['kind'] ) : 'posts';

@@ -213,6 +213,7 @@ class Heb_Product_Publisher_Bulk {
 			wp_send_json_error( [ 'message' => __( '权限不足。', 'heb-product-publisher' ) ], 403 );
 		}
 		check_ajax_referer( Heb_Product_Publisher_Hub_UI::NONCE_ACTION, 'nonce' );
+		Heb_Product_Publisher_Runtime::raise();
 
 		$post_id = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
 		if ( $post_id <= 0 || ! current_user_can( 'edit_post', $post_id ) ) {
