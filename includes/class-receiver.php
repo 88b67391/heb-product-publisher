@@ -142,20 +142,9 @@ class Heb_Product_Publisher_Receiver {
 	 */
 	public function rest_manifest( $request ) {
 		Heb_Product_Publisher_Runtime::raise();
-		$secret = self::get_secret();
-		if ( '' === $secret ) {
-			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
-		}
-		if ( ! $this->rate_limit_ok() ) {
-			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts.', 'heb-product-publisher' ), [ 'status' => 429 ] );
-		}
-		$body = $request->get_json_params();
-		if ( ! is_array( $body ) ) {
-			$body = [];
-		}
-		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
-			$this->rate_limit_bump();
-			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		$body = $this->parse_authenticated_request( $request );
+		if ( is_wp_error( $body ) ) {
+			return $body;
 		}
 
 		$post_types = isset( $body['post_types'] ) && is_array( $body['post_types'] )
@@ -165,6 +154,7 @@ class Heb_Product_Publisher_Receiver {
 					? heb_pp_distributable_post_types()
 					: []
 			);
+		$post_types = array_values( array_intersect( $post_types, self::allowed_post_types() ) );
 		$taxonomies = isset( $body['taxonomies'] ) && is_array( $body['taxonomies'] )
 			? array_map( 'sanitize_key', $body['taxonomies'] )
 			: (
@@ -172,6 +162,7 @@ class Heb_Product_Publisher_Receiver {
 					? heb_pp_distributable_taxonomies()
 					: []
 			);
+		$taxonomies = array_values( array_intersect( $taxonomies, self::allowed_taxonomies() ) );
 		$since = isset( $body['since'] ) ? (int) $body['since'] : 0;
 
 		$posts_out = [];
@@ -247,6 +238,7 @@ class Heb_Product_Publisher_Receiver {
 					'source_site'    => $src_site,
 					'name'           => (string) $term->name,
 					'slug'           => (string) $term->slug,
+					'sync_hash'      => md5( (string) $term->name . '|' . (string) $term->slug ),
 					'edit_url'       => admin_url( 'term.php?taxonomy=' . rawurlencode( $tx ) . '&tag_ID=' . $term->term_id ),
 					'permalink'      => is_wp_error( $link ) ? '' : (string) $link,
 				];
@@ -276,20 +268,9 @@ class Heb_Product_Publisher_Receiver {
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function rest_delete_by_source( $request ) {
-		$secret = self::get_secret();
-		if ( '' === $secret ) {
-			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
-		}
-		if ( ! $this->rate_limit_ok() ) {
-			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts.', 'heb-product-publisher' ), [ 'status' => 429 ] );
-		}
-		$body = $request->get_json_params();
-		if ( ! is_array( $body ) ) {
-			$body = [];
-		}
-		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
-			$this->rate_limit_bump();
-			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		$body = $this->parse_authenticated_request( $request );
+		if ( is_wp_error( $body ) ) {
+			return $body;
 		}
 
 		$kind        = isset( $body['kind'] ) ? sanitize_key( (string) $body['kind'] ) : '';
@@ -306,6 +287,9 @@ class Heb_Product_Publisher_Receiver {
 			if ( '' === $post_type ) {
 				return new \WP_Error( 'heb_pub_bad_payload', __( 'post_type required.', 'heb-product-publisher' ), [ 'status' => 400 ] );
 			}
+			if ( ! in_array( $post_type, self::allowed_post_types(), true ) ) {
+				return new \WP_Error( 'heb_pub_forbidden_type', __( 'Post type is not allowed.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+			}
 			$local_id = $this->find_by_source( $post_type, $source_id, $source_site );
 			if ( $local_id <= 0 ) {
 				return rest_ensure_response( [ 'success' => true, 'deleted' => false, 'reason' => 'not_found' ] );
@@ -321,6 +305,9 @@ class Heb_Product_Publisher_Receiver {
 			$taxonomy = isset( $body['taxonomy'] ) ? sanitize_key( (string) $body['taxonomy'] ) : '';
 			if ( '' === $taxonomy || ! taxonomy_exists( $taxonomy ) ) {
 				return new \WP_Error( 'heb_pub_bad_payload', __( 'taxonomy required.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+			}
+			if ( ! in_array( $taxonomy, self::allowed_taxonomies(), true ) ) {
+				return new \WP_Error( 'heb_pub_forbidden_taxonomy', __( 'Taxonomy is not allowed.', 'heb-product-publisher' ), [ 'status' => 403 ] );
 			}
 			$local_id = $this->find_term_by_source( $taxonomy, $source_id, $source_site );
 			if ( $local_id <= 0 ) {
@@ -348,20 +335,9 @@ class Heb_Product_Publisher_Receiver {
 	 */
 	public function rest_import_menu( $request ) {
 		Heb_Product_Publisher_Runtime::raise();
-		$secret = self::get_secret();
-		if ( '' === $secret ) {
-			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
-		}
-		if ( ! $this->rate_limit_ok() ) {
-			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts.', 'heb-product-publisher' ), [ 'status' => 429 ] );
-		}
-		$body = $request->get_json_params();
-		if ( ! is_array( $body ) ) {
-			$body = [];
-		}
-		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
-			$this->rate_limit_bump();
-			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		$body = $this->parse_authenticated_request( $request );
+		if ( is_wp_error( $body ) ) {
+			return $body;
 		}
 
 		$source_menu_id = isset( $body['source_menu_id'] ) ? (int) $body['source_menu_id'] : 0;
@@ -371,13 +347,22 @@ class Heb_Product_Publisher_Receiver {
 			return new \WP_Error( 'heb_pub_bad_payload', __( 'Bad payload.', 'heb-product-publisher' ), [ 'status' => 400 ] );
 		}
 
-		// 1) 找/建本地 menu（按 source_menu_id meta 反查，找不到按 slug，再不行新建）。
+		// 1) 找/建本地 menu。默认不按 slug 接管已有本地菜单，避免清空子站自有菜单。
 		$menu_id = $this->find_menu_by_source( $source_menu_id, $source_site );
 		if ( $menu_id <= 0 ) {
 			$slug = isset( $body['slug'] ) ? sanitize_title( (string) $body['slug'] ) : sanitize_title( $name );
 			$exists = wp_get_nav_menu_object( $slug );
 			if ( $exists instanceof \WP_Term ) {
+				if ( ! self::allow_slug_adoption() ) {
+					return new \WP_Error(
+						'heb_pub_menu_slug_conflict',
+						__( 'A local menu with the same slug already exists and is not linked to this source.', 'heb-product-publisher' ),
+						[ 'status' => 409 ]
+					);
+				}
 				$menu_id = (int) $exists->term_id;
+				update_term_meta( $menu_id, Heb_Product_Publisher_Menu_Sync::META_MENU_SOURCE_ID, $source_menu_id );
+				update_term_meta( $menu_id, Heb_Product_Publisher_Menu_Sync::META_MENU_SOURCE_SITE, $source_site );
 				// 重命名到翻译后名字
 				wp_update_nav_menu_object(
 					$menu_id,
@@ -489,8 +474,9 @@ class Heb_Product_Publisher_Receiver {
 			}
 		}
 
-		// 4) 设置 theme locations。
-		if ( isset( $body['locations'] ) && is_array( $body['locations'] ) ) {
+		// 4) 设置 theme locations（可显式关闭，避免覆盖子站已有绑定）。
+		$bind_locations = ! isset( $body['bind_theme_locations'] ) || ! empty( $body['bind_theme_locations'] );
+		if ( $bind_locations && isset( $body['locations'] ) && is_array( $body['locations'] ) ) {
 			$locs = get_theme_mod( 'nav_menu_locations', [] );
 			if ( ! is_array( $locs ) ) {
 				$locs = [];
@@ -522,20 +508,9 @@ class Heb_Product_Publisher_Receiver {
 	 */
 	public function rest_import_settings( $request ) {
 		Heb_Product_Publisher_Runtime::raise();
-		$secret = self::get_secret();
-		if ( '' === $secret ) {
-			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
-		}
-		if ( ! $this->rate_limit_ok() ) {
-			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts.', 'heb-product-publisher' ), [ 'status' => 429 ] );
-		}
-		$body = $request->get_json_params();
-		if ( ! is_array( $body ) ) {
-			$body = [];
-		}
-		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
-			$this->rate_limit_bump();
-			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		$body = $this->parse_authenticated_request( $request );
+		if ( is_wp_error( $body ) ) {
+			return $body;
 		}
 		$source_site = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
 		if ( '' === $source_site ) {
@@ -548,6 +523,8 @@ class Heb_Product_Publisher_Receiver {
 
 		$applied = [];
 		$skipped = [];
+		$rewrite_options = [ 'permalink_structure', 'category_base', 'tag_base' ];
+		$flush_rewrite   = false;
 
 		foreach ( (array) ( $body['copy'] ?? [] ) as $opt => $val ) {
 			$opt = sanitize_key( (string) $opt );
@@ -555,7 +532,15 @@ class Heb_Product_Publisher_Receiver {
 				$skipped[] = $opt . ' (not whitelisted)';
 				continue;
 			}
-			update_option( $opt, $val );
+			$safe = $this->sanitize_settings_option_value( $opt, $val );
+			if ( null === $safe ) {
+				$skipped[] = $opt . ' (invalid value type)';
+				continue;
+			}
+			if ( in_array( $opt, $rewrite_options, true ) && get_option( $opt ) !== $safe ) {
+				$flush_rewrite = true;
+			}
+			update_option( $opt, $safe );
 			$applied[] = $opt;
 		}
 		foreach ( (array) ( $body['translate'] ?? [] ) as $opt => $val ) {
@@ -594,11 +579,16 @@ class Heb_Product_Publisher_Receiver {
 			$applied[] = $opt;
 		}
 
+		if ( $flush_rewrite ) {
+			flush_rewrite_rules( false );
+		}
+
 		return rest_ensure_response(
 			[
-				'success' => true,
-				'applied' => $applied,
-				'skipped' => $skipped,
+				'success'         => true,
+				'applied'         => $applied,
+				'skipped'         => $skipped,
+				'rewrite_flushed' => $flush_rewrite,
 			]
 		);
 	}
@@ -670,20 +660,9 @@ class Heb_Product_Publisher_Receiver {
 	 */
 	public function rest_import_term( $request ) {
 		Heb_Product_Publisher_Runtime::raise();
-		$secret = self::get_secret();
-		if ( '' === $secret ) {
-			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
-		}
-		if ( ! $this->rate_limit_ok() ) {
-			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts. Try again later.', 'heb-product-publisher' ), [ 'status' => 429 ] );
-		}
-		$body = $request->get_json_params();
-		if ( ! is_array( $body ) ) {
-			$body = [];
-		}
-		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
-			$this->rate_limit_bump();
-			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		$body = $this->parse_authenticated_request( $request );
+		if ( is_wp_error( $body ) ) {
+			return $body;
 		}
 
 		$taxonomy = isset( $body['taxonomy'] ) ? sanitize_key( (string) $body['taxonomy'] ) : '';
@@ -715,6 +694,13 @@ class Heb_Product_Publisher_Receiver {
 		if ( ! $existing_id && '' !== $fallback_slug ) {
 			$term = get_term_by( 'slug', $fallback_slug, $taxonomy );
 			if ( $term && ! is_wp_error( $term ) ) {
+				if ( ! self::allow_slug_adoption() ) {
+					return new \WP_Error(
+						'heb_pub_term_slug_conflict',
+						__( 'A local term with the same slug already exists and is not linked to this source.', 'heb-product-publisher' ),
+						[ 'status' => 409 ]
+					);
+				}
 				$existing_id = (int) $term->term_id;
 			}
 		}
@@ -751,7 +737,18 @@ class Heb_Product_Publisher_Receiver {
 			$args['name'] = $name;
 			$res          = wp_update_term( $existing_id, $taxonomy, $args );
 		} else {
-			$res = wp_insert_term( $name, $taxonomy, $args );
+			if ( ! $this->acquire_import_lock( 'term', $taxonomy, $source_term_id, $source_site ) ) {
+				$existing_id = $this->find_term_by_source( $taxonomy, $source_term_id, $source_site );
+				if ( $existing_id > 0 ) {
+					$args['name'] = $name;
+					$res          = wp_update_term( $existing_id, $taxonomy, $args );
+				} else {
+					return new \WP_Error( 'heb_pub_import_busy', __( 'Import already in progress.', 'heb-product-publisher' ), [ 'status' => 409 ] );
+				}
+			} else {
+				$res = wp_insert_term( $name, $taxonomy, $args );
+				$this->release_import_lock( 'term', $taxonomy, $source_term_id, $source_site );
+			}
 		}
 		if ( is_wp_error( $res ) ) {
 			return new \WP_Error( 'heb_pub_term_save', $res->get_error_message(), [ 'status' => 500 ] );
@@ -786,20 +783,9 @@ class Heb_Product_Publisher_Receiver {
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function rest_sync_term_lang_map( $request ) {
-		$secret = self::get_secret();
-		if ( '' === $secret ) {
-			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
-		}
-		if ( ! $this->rate_limit_ok() ) {
-			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts. Try again later.', 'heb-product-publisher' ), [ 'status' => 429 ] );
-		}
-		$body = $request->get_json_params();
-		if ( ! is_array( $body ) ) {
-			$body = [];
-		}
-		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
-			$this->rate_limit_bump();
-			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		$body = $this->parse_authenticated_request( $request );
+		if ( is_wp_error( $body ) ) {
+			return $body;
 		}
 
 		$taxonomy       = isset( $body['taxonomy'] ) ? sanitize_key( (string) $body['taxonomy'] ) : '';
@@ -858,20 +844,9 @@ class Heb_Product_Publisher_Receiver {
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function rest_lookup_by_source( $request ) {
-		$secret = self::get_secret();
-		if ( '' === $secret ) {
-			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
-		}
-		if ( ! $this->rate_limit_ok() ) {
-			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts. Try again later.', 'heb-product-publisher' ), [ 'status' => 429 ] );
-		}
-		$body = $request->get_json_params();
-		if ( ! is_array( $body ) ) {
-			$body = [];
-		}
-		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
-			$this->rate_limit_bump();
-			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		$body = $this->parse_authenticated_request( $request );
+		if ( is_wp_error( $body ) ) {
+			return $body;
 		}
 		$post_type      = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : '';
 		$source_post_id = isset( $body['source_post_id'] ) ? (int) $body['source_post_id'] : 0;
@@ -923,6 +898,18 @@ class Heb_Product_Publisher_Receiver {
 	}
 
 	/**
+	 * 是否允许 Receiver 在没有 source meta 时按 slug 接管已有本地对象。
+	 *
+	 * 默认关闭，避免推送时误覆盖子站本地内容/菜单。老站点如果确实依赖这个行为，
+	 * 可通过 filter `heb_pp_receiver_allow_slug_adoption` 显式打开。
+	 *
+	 * @return bool
+	 */
+	private static function allow_slug_adoption() {
+		return (bool) apply_filters( 'heb_pp_receiver_allow_slug_adoption', false );
+	}
+
+	/**
 	 * 简易限速：同 secret 校验失败 N 次后短时间内拒绝（仅基于 transient，存活 5 分钟）。
 	 * 防止穷举 secret。
 	 *
@@ -936,7 +923,48 @@ class Heb_Product_Publisher_Receiver {
 	}
 
 	/**
-	 * 记录一次失败，用于限速。
+	 * 统一鉴权：secret 校验 + 失败限速 + 成功请求配额。
+	 *
+	 * @param mixed $body Request JSON body.
+	 * @return true|\WP_Error
+	 */
+	private function verify_authenticated_request( $body ) {
+		$secret = self::get_secret();
+		if ( '' === $secret ) {
+			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		if ( ! $this->rate_limit_ok() ) {
+			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts. Try again later.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
+		if ( ! is_array( $body ) ) {
+			$body = [];
+		}
+		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			$this->rate_limit_bump();
+			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		}
+		if ( ! $this->request_quota_ok() ) {
+			return new \WP_Error( 'heb_pub_quota', __( 'Request quota exceeded.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
+		$this->request_quota_bump();
+		return true;
+	}
+
+	/**
+	 * @param \WP_REST_Request $request Request.
+	 * @return array<string,mixed>|\WP_Error Body array or error.
+	 */
+	private function parse_authenticated_request( $request ) {
+		$body = $request->get_json_params();
+		$auth = $this->verify_authenticated_request( $body );
+		if ( is_wp_error( $auth ) ) {
+			return $auth;
+		}
+		return is_array( $body ) ? $body : [];
+	}
+
+	/**
+	 * 记录一次失败 secret 校验，用于限速。
 	 */
 	private function rate_limit_bump() {
 		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? preg_replace( '/[^a-fA-F0-9:.]/', '', (string) $_SERVER['REMOTE_ADDR'] ) : 'unknown';
@@ -946,27 +974,118 @@ class Heb_Product_Publisher_Receiver {
 	}
 
 	/**
+	 * 合法请求软限流（防 DoS / manifest 滥用）。
+	 *
+	 * @return bool
+	 */
+	private function request_quota_ok() {
+		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? preg_replace( '/[^a-fA-F0-9:.]/', '', (string) $_SERVER['REMOTE_ADDR'] ) : 'unknown';
+		$key = 'heb_pp_rq_' . md5( (string) $ip );
+		$n   = (int) get_transient( $key );
+		return $n < 180;
+	}
+
+	/**
+	 * @return void
+	 */
+	private function request_quota_bump() {
+		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? preg_replace( '/[^a-fA-F0-9:.]/', '', (string) $_SERVER['REMOTE_ADDR'] ) : 'unknown';
+		$key = 'heb_pp_rq_' . md5( (string) $ip );
+		$n   = (int) get_transient( $key );
+		set_transient( $key, $n + 1, 5 * MINUTE_IN_SECONDS );
+	}
+
+	/**
+	 * import 互斥锁，避免并发重复 insert。
+	 *
+	 * @param string $kind        post|term.
+	 * @param string $type        post_type or taxonomy.
+	 * @param int    $source_id   Source id.
+	 * @param string $source_site Source site host.
+	 * @return bool
+	 */
+	private function acquire_import_lock( $kind, $type, $source_id, $source_site ) {
+		$key = sprintf(
+			'heb_pp_import_%s_%s_%d_%s',
+			sanitize_key( (string) $kind ),
+			sanitize_key( (string) $type ),
+			(int) $source_id,
+			md5( (string) $source_site )
+		);
+		if ( get_transient( $key ) ) {
+			return false;
+		}
+		set_transient( $key, 1, 90 );
+		return true;
+	}
+
+	/**
+	 * @param string $kind        post|term.
+	 * @param string $type        post_type or taxonomy.
+	 * @param int    $source_id   Source id.
+	 * @param string $source_site Source site host.
+	 * @return void
+	 */
+	private function release_import_lock( $kind, $type, $source_id, $source_site ) {
+		$key = sprintf(
+			'heb_pp_import_%s_%s_%d_%s',
+			sanitize_key( (string) $kind ),
+			sanitize_key( (string) $type ),
+			(int) $source_id,
+			md5( (string) $source_site )
+		);
+		delete_transient( $key );
+	}
+
+	/**
+	 * 校验 settings option 值类型，防止写入非法结构。
+	 *
+	 * @param string $opt Option name.
+	 * @param mixed  $val Value.
+	 * @return mixed|null Sanitized value or null if rejected.
+	 */
+	private function sanitize_settings_option_value( $opt, $val ) {
+		$int_opts = [
+			'posts_per_page',
+			'start_of_week',
+			'thumbnail_size_w',
+			'thumbnail_size_h',
+			'medium_size_w',
+			'medium_size_h',
+			'large_size_w',
+			'large_size_h',
+		];
+		if ( in_array( $opt, $int_opts, true ) ) {
+			return (int) $val;
+		}
+		if ( 'gmt_offset' === $opt ) {
+			return (float) $val;
+		}
+		if ( 'thumbnail_crop' === $opt ) {
+			return empty( $val ) ? 0 : 1;
+		}
+		if ( 'show_on_front' === $opt ) {
+			$v = sanitize_key( (string) $val );
+			return in_array( $v, [ 'page', 'posts' ], true ) ? $v : null;
+		}
+		if ( in_array( $opt, [ 'permalink_structure', 'category_base', 'tag_base', 'timezone_string', 'date_format', 'time_format' ], true ) ) {
+			return is_scalar( $val ) ? sanitize_text_field( (string) $val ) : null;
+		}
+		if ( in_array( $opt, Heb_Product_Publisher_Settings_Sync::translate_options(), true ) ) {
+			return is_scalar( $val ) ? sanitize_text_field( (string) $val ) : null;
+		}
+		return is_scalar( $val ) ? $val : null;
+	}
+
+	/**
 	 * @param \WP_REST_Request $request Request.
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function rest_import( $request ) {
 		Heb_Product_Publisher_Runtime::raise();
-		$secret = self::get_secret();
-		if ( '' === $secret ) {
-			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
-		}
-
-		if ( ! $this->rate_limit_ok() ) {
-			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts. Try again later.', 'heb-product-publisher' ), [ 'status' => 429 ] );
-		}
-
-		$body = $request->get_json_params();
-		if ( ! is_array( $body ) ) {
-			$body = [];
-		}
-		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
-			$this->rate_limit_bump();
-			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		$body = $this->parse_authenticated_request( $request );
+		if ( is_wp_error( $body ) ) {
+			return $body;
 		}
 
 		$post_type = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : '';
@@ -999,6 +1118,12 @@ class Heb_Product_Publisher_Receiver {
 		$existing_id = 0;
 		if ( $source_post_id > 0 && '' !== $source_site ) {
 			$existing_id = $this->find_by_source( $post_type, $source_post_id, $source_site );
+		} elseif ( $source_post_id <= 0 || '' === $source_site ) {
+			return new \WP_Error(
+				'heb_pub_missing_source',
+				__( 'source_post_id and source_site are required for import.', 'heb-product-publisher' ),
+				[ 'status' => 400 ]
+			);
 		}
 		if ( ! $existing_id && '' !== $slug && 'source' === $slug_strategy ) {
 			$existing = get_posts(
@@ -1011,6 +1136,13 @@ class Heb_Product_Publisher_Receiver {
 				]
 			);
 			if ( ! empty( $existing ) ) {
+				if ( ! self::allow_slug_adoption() ) {
+					return new \WP_Error(
+						'heb_pub_slug_conflict',
+						__( 'A local post with the same slug already exists and is not linked to this source.', 'heb-product-publisher' ),
+						[ 'status' => 409 ]
+					);
+				}
 				$existing_id = (int) $existing[0];
 			}
 		}
@@ -1066,7 +1198,21 @@ class Heb_Product_Publisher_Receiver {
 			$postarr['ID'] = $existing_id;
 			$post_id       = wp_update_post( wp_slash( $postarr ), true );
 		} else {
-			$post_id = wp_insert_post( wp_slash( $postarr ), true );
+			if ( ! $this->acquire_import_lock( 'post', $post_type, $source_post_id, $source_site ) ) {
+				$existing_id = $this->find_by_source( $post_type, $source_post_id, $source_site );
+				if ( $existing_id > 0 ) {
+					$postarr['ID'] = $existing_id;
+					$post_id       = wp_update_post( wp_slash( $postarr ), true );
+				} else {
+					return new \WP_Error( 'heb_pub_import_busy', __( 'Import already in progress.', 'heb-product-publisher' ), [ 'status' => 409 ] );
+				}
+			} else {
+				$post_id = wp_insert_post( wp_slash( $postarr ), true );
+				$this->release_import_lock( 'post', $post_type, $source_post_id, $source_site );
+				if ( is_wp_error( $post_id ) ) {
+					return new \WP_Error( 'heb_pub_save', $post_id->get_error_message(), [ 'status' => 500 ] );
+				}
+			}
 		}
 		if ( is_wp_error( $post_id ) ) {
 			return new \WP_Error( 'heb_pub_save', $post_id->get_error_message(), [ 'status' => 500 ] );
@@ -1084,6 +1230,9 @@ class Heb_Product_Publisher_Receiver {
 			foreach ( $body['taxonomies'] as $tax => $values ) {
 				$tax = sanitize_key( (string) $tax );
 				if ( ! taxonomy_exists( $tax ) || ! is_array( $values ) ) {
+					continue;
+				}
+				if ( ! in_array( $tax, self::allowed_taxonomies(), true ) ) {
 					continue;
 				}
 				$term_ids = $this->resolve_terms( $tax, $values, $source_site );
@@ -1156,20 +1305,9 @@ class Heb_Product_Publisher_Receiver {
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function rest_sync_lang_map( $request ) {
-		$secret = self::get_secret();
-		if ( '' === $secret ) {
-			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
-		}
-		if ( ! $this->rate_limit_ok() ) {
-			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts. Try again later.', 'heb-product-publisher' ), [ 'status' => 429 ] );
-		}
-		$body = $request->get_json_params();
-		if ( ! is_array( $body ) ) {
-			$body = [];
-		}
-		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
-			$this->rate_limit_bump();
-			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
+		$body = $this->parse_authenticated_request( $request );
+		if ( is_wp_error( $body ) ) {
+			return $body;
 		}
 		$post_type      = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : '';
 		$source_post_id = isset( $body['source_post_id'] ) ? (int) $body['source_post_id'] : 0;
@@ -1274,8 +1412,8 @@ class Heb_Product_Publisher_Receiver {
 	 *  2. slug fallback（向后兼容老格式 + 兼容已有英文 slug 子站 term）
 	 *  3. 都找不到 → wp_insert_term 用 source slug + name 创建
 	 *
-	 * 关键：当 source_site 是 payload 主调用方传入的（即产品/页面 payload 的 source_site）时，
-	 * 我们能给"已有英文 slug 但未关联 source_term_id"的子站 term 隐式补一条 meta，做反向链接。
+	 * 安全默认：slug 命中已有本地 term 时只复用关系，不自动补 source meta；如需老版
+	 * "按 slug 接管"行为，可通过 `heb_pp_receiver_allow_slug_adoption` 显式开启。
 	 *
 	 * @param string                                                                                $tax         Taxonomy.
 	 * @param array<int,mixed>                                                                      $values      Items from payload.
@@ -1312,12 +1450,12 @@ class Heb_Product_Publisher_Receiver {
 				}
 			}
 
-			// 2) 按 slug 反查（兼容老数据 + 隐式建立 source 反向 link）。
+			// 2) 按 slug 反查（兼容老数据）。默认不隐式写 source meta，避免误接管本地 term。
 			if ( '' !== $slug ) {
 				$term = get_term_by( 'slug', $slug, $tax );
 				if ( $term && ! is_wp_error( $term ) ) {
 					$tid = (int) $term->term_id;
-					if ( $source_term_id > 0 && '' !== $source_site ) {
+					if ( self::allow_slug_adoption() && $source_term_id > 0 && '' !== $source_site ) {
 						$existing_src = get_term_meta( $tid, '_heb_pp_source_term_id', true );
 						if ( '' === $existing_src ) {
 							update_term_meta( $tid, '_heb_pp_source_term_id', $source_term_id );
@@ -1404,6 +1542,11 @@ class Heb_Product_Publisher_Receiver {
 	const META_SIDELOAD_SRC = '_heb_pp_sideload_src';
 
 	/**
+	 * 单张远程图片下载大小上限，避免 Receiver 被大文件耗尽磁盘/内存。
+	 */
+	const MAX_SIDELOAD_BYTES = 15728640; // 15 MB.
+
+	/**
 	 * 按源 URL 查找已 sideload 过的 attachment（避免重复下载/生成媒体库垃圾）。
 	 *
 	 * @param string $url 源 URL.
@@ -1467,7 +1610,18 @@ class Heb_Product_Publisher_Receiver {
 		require_once ABSPATH . 'wp-admin/includes/media.php';
 		require_once ABSPATH . 'wp-admin/includes/image.php';
 
-		$tmp = download_url( $url );
+		$limit_filter = static function ( $args, $request_url ) use ( $url ) {
+			if ( $request_url === $url ) {
+				$args['limit_response_size'] = self::MAX_SIDELOAD_BYTES + 1;
+				$args['timeout']             = 60;
+				$args['redirection']         = 0;
+				$args['reject_unsafe_urls']  = true;
+			}
+			return $args;
+		};
+		add_filter( 'http_request_args', $limit_filter, 10, 2 );
+		$tmp = download_url( $url, 60 );
+		remove_filter( 'http_request_args', $limit_filter, 10 );
 		if ( is_wp_error( $tmp ) ) {
 			return 0;
 		}
@@ -1476,6 +1630,16 @@ class Heb_Product_Publisher_Receiver {
 		$name = $path ? basename( $path ) : 'image.jpg';
 		if ( ! preg_match( '/\.(jpe?g|png|gif|webp|avif)$/i', $name ) ) {
 			$name .= '.jpg';
+		}
+		if ( filesize( $tmp ) > self::MAX_SIDELOAD_BYTES ) {
+			@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			return 0;
+		}
+		$checked = wp_check_filetype_and_ext( $tmp, sanitize_file_name( $name ) );
+		$type    = isset( $checked['type'] ) ? (string) $checked['type'] : '';
+		if ( ! in_array( $type, [ 'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif' ], true ) ) {
+			@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			return 0;
 		}
 
 		$file_array = [

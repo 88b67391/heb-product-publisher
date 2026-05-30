@@ -24,6 +24,7 @@ require_once __DIR__ . '/class-receiver.php';
 require_once __DIR__ . '/class-site-info.php';
 require_once __DIR__ . '/class-translator.php';
 require_once __DIR__ . '/class-remote-client.php';
+require_once __DIR__ . '/class-admin-menu.php';
 require_once __DIR__ . '/class-admin-settings.php';
 require_once __DIR__ . '/class-hub-ui.php';
 require_once __DIR__ . '/class-updater.php';

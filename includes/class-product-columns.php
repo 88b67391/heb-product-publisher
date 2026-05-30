@@ -73,7 +73,7 @@ class Heb_Product_Publisher_Product_Columns {
 			return;
 		}
 
-		$log_base = admin_url( 'tools.php?page=heb-pp-log' );
+		$log_base = Heb_Product_Publisher_Admin_Menu::url( 'heb-pp-log' );
 		echo '<div class="heb-pp-dist-cell">';
 		foreach ( $sites as $site ) {
 			$sid   = (string) ( isset( $site['id'] ) ? $site['id'] : '' );

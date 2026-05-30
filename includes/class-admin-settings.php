@@ -1,6 +1,6 @@
 <?php
 /**
- * Settings page：Receiver / Hub（OpenRouter）/ Remote Sites。
+ * Settings page：HEB 分发 → 设置。
  *
  * @package HebProductPublisher
  */
@@ -9,9 +9,6 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-/**
- * 设置 → HEB Publisher
- */
 class Heb_Product_Publisher_Admin_Settings {
 
 	const OPT_RECEIVER_SECRET  = 'heb_publisher_receiver_secret';
@@ -47,7 +44,7 @@ class Heb_Product_Publisher_Admin_Settings {
 
 	private function __construct() {
 		add_action( 'admin_init', [ $this, 'register_settings' ] );
-		add_action( 'admin_menu', [ $this, 'add_menu' ] );
+		add_action( 'admin_menu', [ $this, 'add_menu' ], 10 );
 		add_action( 'admin_post_heb_pp_check_updates', [ $this, 'handle_check_updates' ] );
 		add_action( 'admin_bar_menu', [ $this, 'add_admin_bar_check_updates' ], 90 );
 	}
@@ -314,8 +311,9 @@ class Heb_Product_Publisher_Admin_Settings {
 
 		wp_safe_redirect(
 			add_query_arg(
-				[ 'page' => 'heb-product-publisher', 'heb_pp_update_check' => rawurlencode( $msg ) ],
-				admin_url( 'options-general.php' )
+				'heb_pp_update_check',
+				rawurlencode( $msg ),
+				Heb_Product_Publisher_Admin_Menu::url()
 			)
 		);
 		exit;
@@ -422,11 +420,21 @@ class Heb_Product_Publisher_Admin_Settings {
 	}
 
 	public function add_menu() {
-		add_options_page(
-			__( 'HEB Publisher', 'heb-product-publisher' ),
-			__( 'HEB Publisher', 'heb-product-publisher' ),
+		add_menu_page(
+			__( 'HEB 分发', 'heb-product-publisher' ),
+			__( 'HEB 分发', 'heb-product-publisher' ),
 			'manage_options',
-			'heb-product-publisher',
+			Heb_Product_Publisher_Admin_Menu::PARENT_SLUG,
+			[ $this, 'render_page' ],
+			'dashicons-networking',
+			81
+		);
+		add_submenu_page(
+			Heb_Product_Publisher_Admin_Menu::PARENT_SLUG,
+			__( 'HEB Publisher 设置', 'heb-product-publisher' ),
+			__( '设置', 'heb-product-publisher' ),
+			'manage_options',
+			Heb_Product_Publisher_Admin_Menu::PARENT_SLUG,
 			[ $this, 'render_page' ]
 		);
 	}

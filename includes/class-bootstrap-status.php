@@ -19,11 +19,12 @@ class Heb_Product_Publisher_Bootstrap_Status {
 	const MAX_LOG    = 200;
 	const MAX_ERROR  = 100;
 
-	const STATUS_QUEUED    = 'queued';
-	const STATUS_RUNNING   = 'running';
-	const STATUS_DONE      = 'done';
-	const STATUS_FAILED    = 'failed';
-	const STATUS_CANCELLED = 'cancelled';
+	const STATUS_QUEUED           = 'queued';
+	const STATUS_RUNNING          = 'running';
+	const STATUS_DONE             = 'done';
+	const STATUS_DONE_WITH_ERRORS = 'done_with_errors';
+	const STATUS_FAILED           = 'failed';
+	const STATUS_CANCELLED        = 'cancelled';
 
 	const STAGE_PROBE    = 'probe';
 	const STAGE_TERMS    = 'terms';
@@ -36,7 +37,7 @@ class Heb_Product_Publisher_Bootstrap_Status {
 	 * 创建新 job 并返回 id。
 	 *
 	 * @param string $site_id Target site id.
-	 * @param array<string,mixed> $opts Bootstrap options (scope toggles, dry_run 等).
+	 * @param array<string,mixed> $opts Bootstrap options (scope toggles, dry_run, retry_*).
 	 * @return string
 	 */
 	public static function create( $site_id, array $opts = [] ) {
@@ -102,7 +103,7 @@ class Heb_Product_Publisher_Bootstrap_Status {
 	}
 
 	/**
-	 * 递增某 stage 的某计数器（线程安全：用 wp options 自身的写锁，足够本场景）。
+	 * 递增某 stage 的某计数器（带 transient 锁，避免并行 AS worker 丢失计数）。
 	 *
 	 * @param string $id    Job id.
 	 * @param string $stage Stage key.
@@ -111,19 +112,70 @@ class Heb_Product_Publisher_Bootstrap_Status {
 	 * @return void
 	 */
 	public static function increment( $id, $stage, $key, $delta = 1 ) {
-		$rec = self::get( $id );
-		if ( ! $rec ) {
-			return;
+		self::with_job_lock(
+			$id,
+			static function () use ( $id, $stage, $key, $delta ) {
+				$rec = self::get( $id );
+				if ( ! $rec ) {
+					return;
+				}
+				if ( ! isset( $rec['progress'][ $stage ] ) ) {
+					$rec['progress'][ $stage ] = [ 'queued' => 0, 'done' => 0, 'failed' => 0, 'skipped' => 0 ];
+				}
+				if ( ! isset( $rec['progress'][ $stage ][ $key ] ) ) {
+					$rec['progress'][ $stage ][ $key ] = 0;
+				}
+				$rec['progress'][ $stage ][ $key ] = max( 0, (int) $rec['progress'][ $stage ][ $key ] + (int) $delta );
+				$rec['updated_at']                  = time();
+				update_option( self::OPT_PREFIX . (string) $id, $rec, false );
+			}
+		);
+	}
+
+	/**
+	 * 尝试获取 job 级短锁（跨并行 worker 互斥读写 progress / stage）。
+	 *
+	 * @param string   $id       Job id.
+	 * @param callable $callback Callback while lock held.
+	 * @return mixed|null Callback return value, or null if lock not acquired.
+	 */
+	public static function with_job_lock( $id, callable $callback ) {
+		$lock_key = 'heb_pp_bs_lock_' . md5( (string) $id );
+		$attempts = 0;
+		while ( $attempts < 20 ) {
+			if ( get_transient( $lock_key ) ) {
+				usleep( 100000 );
+				$attempts++;
+				continue;
+			}
+			set_transient( $lock_key, 1, 30 );
+			try {
+				return $callback();
+			} finally {
+				delete_transient( $lock_key );
+			}
 		}
-		if ( ! isset( $rec['progress'][ $stage ] ) ) {
-			$rec['progress'][ $stage ] = [ 'queued' => 0, 'done' => 0, 'failed' => 0, 'skipped' => 0 ];
+		return null;
+	}
+
+	/**
+	 * 阶段切换专用锁：同一 job 同时只允许一个 worker 执行 advance。
+	 *
+	 * @param string   $id       Job id.
+	 * @param callable $callback Callback while lock held.
+	 * @return mixed|null
+	 */
+	public static function with_advance_lock( $id, callable $callback ) {
+		$lock_key = 'heb_pp_bs_adv_' . md5( (string) $id );
+		if ( get_transient( $lock_key ) ) {
+			return null;
 		}
-		if ( ! isset( $rec['progress'][ $stage ][ $key ] ) ) {
-			$rec['progress'][ $stage ][ $key ] = 0;
+		set_transient( $lock_key, 1, 60 );
+		try {
+			return $callback();
+		} finally {
+			delete_transient( $lock_key );
 		}
-		$rec['progress'][ $stage ][ $key ] = max( 0, (int) $rec['progress'][ $stage ][ $key ] + (int) $delta );
-		$rec['updated_at']                  = time();
-		update_option( self::OPT_PREFIX . (string) $id, $rec, false );
 	}
 
 	/**
@@ -223,7 +275,7 @@ class Heb_Product_Publisher_Bootstrap_Status {
 	}
 
 	/**
-	 * 标记 cancelled；不主动 cancel AS 队列（worker 会自检状态后跳过）。
+	 * 标记 cancelled 并撤销该 job 尚未执行的 AS 任务。
 	 *
 	 * @param string $id Job id.
 	 * @return bool
@@ -233,9 +285,14 @@ class Heb_Product_Publisher_Bootstrap_Status {
 		if ( ! $rec ) {
 			return false;
 		}
-		if ( in_array( $rec['status'], [ self::STATUS_DONE, self::STATUS_FAILED, self::STATUS_CANCELLED ], true ) ) {
+		if ( in_array(
+			$rec['status'],
+			[ self::STATUS_DONE, self::STATUS_DONE_WITH_ERRORS, self::STATUS_FAILED, self::STATUS_CANCELLED ],
+			true
+		) ) {
 			return false;
 		}
+		self::unschedule_job_actions( $id );
 		self::update(
 			$id,
 			[
@@ -246,6 +303,51 @@ class Heb_Product_Publisher_Bootstrap_Status {
 		);
 		self::add_log( $id, 'info', __( 'Job cancelled by user.', 'heb-product-publisher' ) );
 		return true;
+	}
+
+	/**
+	 * 撤销 Bootstrap 组内属于指定 job 的待执行 AS 动作。
+	 *
+	 * @param string $id Job id.
+	 * @return void
+	 */
+	public static function unschedule_job_actions( $id ) {
+		if ( ! function_exists( 'as_get_scheduled_actions' ) || ! function_exists( 'as_unschedule_action' ) ) {
+			return;
+		}
+		$hooks = [
+			Heb_Product_Publisher_Bootstrap_Queue::HOOK_PROBE,
+			Heb_Product_Publisher_Bootstrap_Queue::HOOK_TERM,
+			Heb_Product_Publisher_Bootstrap_Queue::HOOK_POST,
+			Heb_Product_Publisher_Bootstrap_Queue::HOOK_SETTINGS,
+			Heb_Product_Publisher_Bootstrap_Queue::HOOK_MENU,
+			Heb_Product_Publisher_Bootstrap_Queue::HOOK_FINALIZE,
+		];
+		foreach ( $hooks as $hook ) {
+			$actions = as_get_scheduled_actions(
+				[
+					'hook'   => $hook,
+					'group'  => Heb_Product_Publisher_Bootstrap_Queue::GROUP,
+					'status' => \ActionScheduler_Store::STATUS_PENDING,
+					'per_page' => 200,
+				],
+				'ids'
+			);
+			if ( empty( $actions ) ) {
+				continue;
+			}
+			foreach ( $actions as $action_id ) {
+				$action = function_exists( 'as_get_scheduled_action' ) ? as_get_scheduled_action( $action_id ) : null;
+				if ( ! $action || ! method_exists( $action, 'get_args' ) ) {
+					continue;
+				}
+				$args = $action->get_args();
+				$payload = isset( $args[0] ) && is_array( $args[0] ) ? $args[0] : $args;
+				if ( isset( $payload['job_id'] ) && (string) $payload['job_id'] === (string) $id ) {
+					as_unschedule_action( $hook, $args, Heb_Product_Publisher_Bootstrap_Queue::GROUP );
+				}
+			}
+		}
 	}
 
 	/**

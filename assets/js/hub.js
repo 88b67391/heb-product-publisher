@@ -116,13 +116,21 @@
 		var $li = $box.find('.heb-pp-site-item[data-site-id="' + siteId + '"]');
 		var label = $li.find('.heb-pp-site-label').text();
 		var $result = $('#heb-pp-result');
-		var cls = res.ok ? 'ok' : 'err';
+		var cls = res.ok ? 'ok' : (res.locked ? 'warn' : 'err');
 		var html = '<strong>' + escapeHtml(label) + '</strong> · ';
-		if (res.ok) {
+		if (res.locked) {
+			html += '🔒 ' + escapeHtml(res.message || 'locked locally');
+		} else if (res.ok) {
 			html += (res.created ? '已新建' : '已更新') + ' #' + res.post_id;
 			if (res.locale) html += ' · locale=' + escapeHtml(res.locale);
 			if (res.translate && res.translate.strings) {
 				html += ' · ' + res.translate.translated + '/' + res.translate.strings + ' 字符串';
+				if (res.translate.strings > 0 && res.translate.translated / res.translate.strings < 0.85) {
+					html += ' <span class="heb-pp-warn">⚠ 翻译不完整</span>';
+				}
+			}
+			if (res.pending_media > 0) {
+				html += ' · ⏳ ' + res.pending_media + ' media pending';
 			}
 			if (res.edit_url) html += ' · <a href="' + res.edit_url + '" target="_blank" rel="noopener">在目标站点打开</a>';
 		} else {

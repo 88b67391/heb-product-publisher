@@ -44,6 +44,13 @@
 						if (r.edit_url) {
 							html += ' <a href="' + r.edit_url + '" target="_blank" rel="noopener">' + '[edit]' + '</a>';
 						}
+						if (r.warn && r.warn.length) {
+							r.warn.forEach(function (w) {
+								html += '<br><span style="color:#b80;">⚠ ' + String(w).replace(/[&<>"']/g, function (c) {
+									return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+								}) + '</span>';
+							});
+						}
 						html += '</li>';
 						lines.push(html);
 					} else {

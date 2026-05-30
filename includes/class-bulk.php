@@ -134,7 +134,7 @@ class Heb_Product_Publisher_Bulk {
 						printf(
 							/* translators: %s: settings URL */
 							esc_html__( '尚未配置任何远端站点，请先到 %s 添加。', 'heb-product-publisher' ),
-							'<a href="' . esc_url( admin_url( 'options-general.php?page=heb-product-publisher' ) ) . '">' . esc_html__( '设置页', 'heb-product-publisher' ) . '</a>'
+							'<a href="' . esc_url( Heb_Product_Publisher_Admin_Menu::url() ) . '">' . esc_html__( '设置页', 'heb-product-publisher' ) . '</a>'
 						);
 						?>
 					</p>
@@ -159,7 +159,7 @@ class Heb_Product_Publisher_Bulk {
 					<button type="button" class="button button-primary button-hero" id="heb-pp-bulk-start">
 						<?php esc_html_e( '开始分发', 'heb-product-publisher' ); ?>
 					</button>
-					<a class="button" href="<?php echo esc_url( admin_url( 'tools.php?page=heb-pp-log' ) ); ?>" target="_blank"><?php esc_html_e( '打开分发日志', 'heb-product-publisher' ); ?></a>
+					<a class="button" href="<?php echo esc_url( Heb_Product_Publisher_Admin_Menu::url( 'heb-pp-log' ) ); ?>" target="_blank"><?php esc_html_e( '打开分发日志', 'heb-product-publisher' ); ?></a>
 				</div>
 			</div>
 

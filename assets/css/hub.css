@@ -189,6 +189,31 @@
 	border-left: 3px solid #b32d2e;
 }
 
+.heb-pp-result-item.warn {
+	background: #fff8e5;
+	border-left: 3px solid #dba617;
+}
+
+.heb-pp-hub-history {
+	margin-top: 12px;
+	padding-top: 10px;
+	border-top: 1px solid #dcdcde;
+	font-size: 12px;
+}
+
+.heb-pp-hub-history-list {
+	margin: 6px 0 0;
+	padding-left: 16px;
+}
+
+.heb-pp-hub-history-item.heb-pp-err {
+	color: #b32d2e;
+}
+
+.heb-pp-hub-history-item.heb-pp-warn {
+	color: #996b00;
+}
+
 .heb-pp-result-item .heb-pp-warn {
 	color: #996b00;
 	display: block;

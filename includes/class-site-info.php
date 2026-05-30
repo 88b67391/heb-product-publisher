@@ -56,14 +56,22 @@ class Heb_Product_Publisher_Site_Info {
 		if ( '' === $secret ) {
 			return new \WP_Error( 'heb_pub_disabled', __( 'Receiver is not configured.', 'heb-product-publisher' ), [ 'status' => 403 ] );
 		}
+		if ( ! $this->rate_limit_ok() ) {
+			return new \WP_Error( 'heb_pub_rate_limited', __( 'Too many failed attempts.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
 
 		$body = $request->get_json_params();
 		if ( ! is_array( $body ) ) {
 			$body = [];
 		}
 		if ( empty( $body['secret'] ) || ! hash_equals( $secret, (string) $body['secret'] ) ) {
+			$this->rate_limit_bump();
 			return new \WP_Error( 'heb_pub_forbidden', __( 'Invalid secret.', 'heb-product-publisher' ), [ 'status' => 403 ] );
 		}
+		if ( ! $this->request_quota_ok() ) {
+			return new \WP_Error( 'heb_pub_quota', __( 'Request quota exceeded.', 'heb-product-publisher' ), [ 'status' => 429 ] );
+		}
+		$this->request_quota_bump();
 
 		$allowed = Heb_Product_Publisher_Receiver::allowed_post_types();
 
@@ -122,5 +130,45 @@ class Heb_Product_Publisher_Site_Info {
 				'plugin_version'           => defined( 'HEB_PP_VERSION' ) ? HEB_PP_VERSION : '',
 			]
 		);
+	}
+
+	/**
+	 * @return bool
+	 */
+	private function rate_limit_ok() {
+		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? preg_replace( '/[^a-fA-F0-9:.]/', '', (string) $_SERVER['REMOTE_ADDR'] ) : 'unknown';
+		$key = 'heb_pp_rl_' . md5( (string) $ip );
+		$n   = (int) get_transient( $key );
+		return $n < 30;
+	}
+
+	/**
+	 * @return void
+	 */
+	private function rate_limit_bump() {
+		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? preg_replace( '/[^a-fA-F0-9:.]/', '', (string) $_SERVER['REMOTE_ADDR'] ) : 'unknown';
+		$key = 'heb_pp_rl_' . md5( (string) $ip );
+		$n   = (int) get_transient( $key );
+		set_transient( $key, $n + 1, 5 * MINUTE_IN_SECONDS );
+	}
+
+	/**
+	 * @return bool
+	 */
+	private function request_quota_ok() {
+		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? preg_replace( '/[^a-fA-F0-9:.]/', '', (string) $_SERVER['REMOTE_ADDR'] ) : 'unknown';
+		$key = 'heb_pp_rq_' . md5( (string) $ip );
+		$n   = (int) get_transient( $key );
+		return $n < 180;
+	}
+
+	/**
+	 * @return void
+	 */
+	private function request_quota_bump() {
+		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? preg_replace( '/[^a-fA-F0-9:.]/', '', (string) $_SERVER['REMOTE_ADDR'] ) : 'unknown';
+		$key = 'heb_pp_rq_' . md5( (string) $ip );
+		$n   = (int) get_transient( $key );
+		set_transient( $key, $n + 1, 5 * MINUTE_IN_SECONDS );
 	}
 }

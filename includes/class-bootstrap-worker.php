@@ -55,10 +55,15 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 
 		Heb_Product_Publisher_Bootstrap_Status::update( $job_id, [ 'status' => Heb_Product_Publisher_Bootstrap_Status::STATUS_RUNNING ] );
 
+		$probe_pt = 'products';
+		$pts      = heb_pp_distributable_post_types();
+		if ( ! empty( $pts ) ) {
+			$probe_pt = (string) $pts[0];
+		}
 		$res = Heb_Product_Publisher_Remote_Client::post(
 			$site,
 			'/site-info',
-			[ 'post_type' => 'products' ],
+			[ 'post_type' => $probe_pt ],
 			20
 		);
 		if ( is_wp_error( $res ) ) {
@@ -67,6 +72,37 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		}
 		$locale = isset( $res['locale'] ) ? (string) $res['locale'] : '';
 		Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, 'info', sprintf( __( 'Probe OK，目标站 locale = %s', 'heb-product-publisher' ), '' !== $locale ? $locale : '(unknown)' ) );
+
+		$opts = isset( $rec['opts'] ) && is_array( $rec['opts'] ) ? $rec['opts'] : [];
+
+		if ( ! empty( $opts['dry_run'] ) ) {
+			$counts = Heb_Product_Publisher_Bootstrap_Queue::count_dispatchable( $rec );
+			Heb_Product_Publisher_Bootstrap_Status::update(
+				$job_id,
+				[
+					'status'        => Heb_Product_Publisher_Bootstrap_Status::STATUS_DONE,
+					'current_stage' => Heb_Product_Publisher_Bootstrap_Status::STAGE_FINISHED,
+					'finished_at'   => time(),
+				]
+			);
+			Heb_Product_Publisher_Bootstrap_Status::add_log(
+				$job_id,
+				'info',
+				sprintf(
+					__( 'Dry run 完成：terms=%1$d, posts=%2$d, menus=%3$d, settings=%4$d（未实际推送）', 'heb-product-publisher' ),
+					$counts['terms'],
+					$counts['posts'],
+					$counts['menus'],
+					$counts['settings']
+				)
+			);
+			return;
+		}
+
+		if ( ! empty( $opts['retry_mode'] ) && ! empty( $opts['retry_items'] ) && is_array( $opts['retry_items'] ) ) {
+			Heb_Product_Publisher_Bootstrap_Queue::dispatch_retry_items( $job_id, $opts['retry_items'] );
+			return;
+		}
 
 		Heb_Product_Publisher_Bootstrap_Queue::advance_stage( $job_id );
 	}
@@ -103,6 +139,7 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 				Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'term', $term_id, isset( $res['message'] ) ? (string) $res['message'] : 'unknown' );
 			} else {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'done' );
+				$this->log_distribute_warns( $job_id, 'term', $term_id, $res );
 			}
 		} catch ( \Throwable $e ) {
 			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
@@ -138,11 +175,14 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			$translator = new Heb_Product_Publisher_Translator();
 			$hub_ui     = Heb_Product_Publisher_Hub_UI::instance();
 			$res        = $hub_ui->distribute_to_site( $post_id, $payload, (string) $payload['source_locale'], $site, [], $translator );
-			if ( empty( $res['ok'] ) ) {
+			if ( ! empty( $res['locked'] ) ) {
+				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'skipped' );
+			} elseif ( empty( $res['ok'] ) ) {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 				Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'post', $post_id, isset( $res['message'] ) ? (string) $res['message'] : 'unknown' );
 			} else {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'done' );
+				$this->log_distribute_warns( $job_id, 'post', $post_id, $res );
 			}
 		} catch ( \Throwable $e ) {
 			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
@@ -177,7 +217,9 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			}
 			$translator = new Heb_Product_Publisher_Translator();
 			$menu_sync  = new Heb_Product_Publisher_Menu_Sync();
-			$res        = $menu_sync->distribute_to_site( $menu_id, $payload, (string) $payload['source_locale'], $site, $translator );
+			$opts       = isset( $rec['opts'] ) && is_array( $rec['opts'] ) ? $rec['opts'] : [];
+			$bind_locs  = ! empty( $opts['scope_menu_locations'] );
+			$res        = $menu_sync->distribute_to_site( $menu_id, $payload, (string) $payload['source_locale'], $site, $translator, $bind_locs );
 			if ( empty( $res['ok'] ) ) {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 				Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'menu', $menu_id, isset( $res['message'] ) ? (string) $res['message'] : 'unknown' );
@@ -270,6 +312,8 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		$status = Heb_Product_Publisher_Bootstrap_Status::STATUS_DONE;
 		if ( $totals['queued'] > 0 && $totals['failed'] === $totals['queued'] ) {
 			$status = Heb_Product_Publisher_Bootstrap_Status::STATUS_FAILED;
+		} elseif ( $totals['failed'] > 0 ) {
+			$status = Heb_Product_Publisher_Bootstrap_Status::STATUS_DONE_WITH_ERRORS;
 		}
 
 		Heb_Product_Publisher_Bootstrap_Status::update(
@@ -328,6 +372,7 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			[
 				Heb_Product_Publisher_Bootstrap_Status::STATUS_CANCELLED,
 				Heb_Product_Publisher_Bootstrap_Status::STATUS_DONE,
+				Heb_Product_Publisher_Bootstrap_Status::STATUS_DONE_WITH_ERRORS,
 				Heb_Product_Publisher_Bootstrap_Status::STATUS_FAILED,
 			],
 			true
@@ -349,6 +394,39 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			]
 		);
 		Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, 'error', (string) $message );
+	}
+
+	/**
+	 * 分发成功但带 warn（如 hreflang 同步失败）时写入 job log。
+	 *
+	 * @param string               $job_id    Job id.
+	 * @param string               $type      term|post.
+	 * @param int                  $source_id Source object id.
+	 * @param array<string,mixed>  $res       Distribute result.
+	 * @return void
+	 */
+	private function log_distribute_warns( $job_id, $type, $source_id, array $res ) {
+		$warns = isset( $res['warn'] ) && is_array( $res['warn'] ) ? $res['warn'] : [];
+		if ( empty( $warns ) ) {
+			return;
+		}
+		foreach ( $warns as $w ) {
+			$msg = is_string( $w ) ? $w : wp_json_encode( $w );
+			if ( ! is_string( $msg ) || '' === $msg ) {
+				continue;
+			}
+			Heb_Product_Publisher_Bootstrap_Status::add_log(
+				$job_id,
+				'warning',
+				sprintf(
+					/* translators: 1: object type, 2: source id, 3: warning message */
+					__( '%1$s #%2$d: %3$s', 'heb-product-publisher' ),
+					$type,
+					$source_id,
+					$msg
+				)
+			);
+		}
 	}
 
 	/**

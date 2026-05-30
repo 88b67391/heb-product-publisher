@@ -86,7 +86,7 @@ class Heb_Product_Publisher_Term_Hub_UI {
 				<?php if ( empty( $sites ) ) : ?>
 					<p class="description">
 						<?php esc_html_e( '尚未配置远端站点。', 'heb-product-publisher' ); ?>
-						<a href="<?php echo esc_url( admin_url( 'options-general.php?page=heb-product-publisher' ) ); ?>">
+						<a href="<?php echo esc_url( Heb_Product_Publisher_Admin_Menu::url() ); ?>">
 							<?php esc_html_e( '去配置', 'heb-product-publisher' ); ?>
 						</a>
 					</p>

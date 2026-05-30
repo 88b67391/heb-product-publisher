@@ -193,6 +193,20 @@ class Heb_Product_Publisher_Term_Sync {
 		$target_locale = isset( $site['locale_override'] ) && '' !== $site['locale_override']
 			? (string) $site['locale_override']
 			: '';
+		if ( '' === $target_locale ) {
+			$info = Heb_Product_Publisher_Remote_Client::post( $site, '/site-info', [], 15 );
+			if ( is_wp_error( $info ) ) {
+				return [
+					'ok'         => false,
+					'message'    => $info->get_error_message(),
+					'site_id'    => $sid,
+					'site_label' => $label,
+					'errors'     => [],
+					'duration_ms' => (int) round( ( microtime( true ) - $started ) * 1000 ),
+				];
+			}
+			$target_locale = isset( $info['locale'] ) ? (string) $info['locale'] : '';
+		}
 
 		// 1) 翻译 name/description + 生成本地化 slug。
 		$translated = $this->translate_payload( $basepayload, $source_locale, $target_locale, $translator );
@@ -220,7 +234,7 @@ class Heb_Product_Publisher_Term_Sync {
 		}
 
 		// 4) 成功后写回主站 term 的 lang_map（含此目标站 URL）。
-		$this->refresh_term_lang_map( $term_id, $basepayload, $site, $target_locale, $res );
+		$lang_map_warns = $this->refresh_term_lang_map( $term_id, $basepayload, $site, $target_locale, $res );
 
 		return [
 			'ok'             => true,
@@ -229,7 +243,8 @@ class Heb_Product_Publisher_Term_Sync {
 			'remote_term_id' => isset( $res['term_id'] ) ? (int) $res['term_id'] : 0,
 			'remote_url'     => isset( $res['url'] ) ? (string) $res['url'] : '',
 			'edit_url'       => isset( $res['edit_url'] ) ? (string) $res['edit_url'] : '',
-			'errors'         => $errors,
+			'errors'         => array_merge( $errors, $lang_map_warns ),
+			'warn'           => $lang_map_warns,
 			'duration_ms'    => $elapsed_ms,
 		];
 	}
@@ -269,32 +284,35 @@ class Heb_Product_Publisher_Term_Sync {
 	 * @param array<string,string>  $site          Remote site row.
 	 * @param string                $target_locale Target locale.
 	 * @param array<string,mixed>   $result        Push result.
+	 * @return array<int,string> Lang map sync warnings.
 	 */
 	private function refresh_term_lang_map( $term_id, array $basepayload, array $site, $target_locale, array $result ) {
 		$lang = self::locale_to_lang( $target_locale );
 		$url  = isset( $result['url'] ) ? esc_url_raw( (string) $result['url'] ) : '';
 		if ( '' === $lang || '' === $url ) {
-			return;
+			return [];
 		}
 		$map          = $this->collect_term_lang_map( $term_id, $basepayload );
 		$map[ $lang ] = $url;
 		update_term_meta( $term_id, self::META_LANG_MAP, $map );
-		$this->sync_lang_map_to_all_sites( $basepayload, $map );
+		return $this->sync_lang_map_to_all_sites( $basepayload, $map );
 	}
 
 	/**
 	 * @param array<string,mixed>  $basepayload Payload (含 taxonomy / source_term_id / source_site).
 	 * @param array<string,string> $lang_map    Lang map.
+	 * @return array<int,string> Failures.
 	 */
 	private function sync_lang_map_to_all_sites( array $basepayload, array $lang_map ) {
 		$taxonomy       = isset( $basepayload['taxonomy'] ) ? sanitize_key( (string) $basepayload['taxonomy'] ) : '';
 		$source_term_id = isset( $basepayload['source_term_id'] ) ? (int) $basepayload['source_term_id'] : 0;
 		$source_site    = isset( $basepayload['source_site'] ) ? sanitize_text_field( (string) $basepayload['source_site'] ) : '';
 		if ( '' === $taxonomy || $source_term_id <= 0 || '' === $source_site || empty( $lang_map ) ) {
-			return;
+			return [];
 		}
+		$failures = [];
 		foreach ( Heb_Product_Publisher_Admin_Settings::remote_sites() as $s ) {
-			Heb_Product_Publisher_Remote_Client::post(
+			$res = Heb_Product_Publisher_Remote_Client::post(
 				$s,
 				'/sync-term-lang-map',
 				[
@@ -305,7 +323,15 @@ class Heb_Product_Publisher_Term_Sync {
 				],
 				15
 			);
+			if ( is_wp_error( $res ) ) {
+				$failures[] = sprintf(
+					'%s: %s',
+					isset( $s['label'] ) ? (string) $s['label'] : '',
+					$res->get_error_message()
+				);
+			}
 		}
+		return $failures;
 	}
 
 	/**

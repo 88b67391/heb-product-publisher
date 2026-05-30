@@ -1,6 +1,6 @@
 <?php
 /**
- * 分发日志管理页：工具 → HEB 分发日志。
+ * 分发日志管理页：HEB 分发 → 分发日志。
  *
  * @package HebProductPublisher
  */
@@ -25,13 +25,14 @@ class Heb_Product_Publisher_Log_Admin {
 	}
 
 	private function __construct() {
-		add_action( 'admin_menu', [ $this, 'add_menu' ] );
+		add_action( 'admin_menu', [ $this, 'add_menu' ], 13 );
 	}
 
 	public function add_menu() {
-		add_management_page(
+		add_submenu_page(
+			Heb_Product_Publisher_Admin_Menu::PARENT_SLUG,
 			__( 'HEB 分发日志', 'heb-product-publisher' ),
-			__( 'HEB 分发日志', 'heb-product-publisher' ),
+			__( '分发日志', 'heb-product-publisher' ),
 			'manage_options',
 			'heb-pp-log',
 			[ $this, 'render' ]
@@ -102,7 +103,7 @@ class Heb_Product_Publisher_Log_Admin {
 				<input type="search" name="s" value="<?php echo esc_attr( $search ); ?>" placeholder="<?php esc_attr_e( '搜索标题 / 站点 / 错误消息', 'heb-product-publisher' ); ?>" />
 				<?php submit_button( __( '筛选', 'heb-product-publisher' ), 'secondary', '', false ); ?>
 				<?php if ( $site || $status || $search || $post_id ) : ?>
-					<a class="button-link" href="<?php echo esc_url( admin_url( 'tools.php?page=heb-pp-log' ) ); ?>"><?php esc_html_e( '清空条件', 'heb-product-publisher' ); ?></a>
+					<a class="button-link" href="<?php echo esc_url( Heb_Product_Publisher_Admin_Menu::url( 'heb-pp-log' ) ); ?>"><?php esc_html_e( '清空条件', 'heb-product-publisher' ); ?></a>
 				<?php endif; ?>
 			</form>
 

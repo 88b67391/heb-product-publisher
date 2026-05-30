@@ -157,6 +157,20 @@ class Heb_Product_Publisher_Settings_Sync {
 		$target_locale = isset( $site['locale_override'] ) && '' !== $site['locale_override']
 			? (string) $site['locale_override']
 			: '';
+		if ( '' === $target_locale ) {
+			$info = Heb_Product_Publisher_Remote_Client::post( $site, '/site-info', [], 15 );
+			if ( is_wp_error( $info ) ) {
+				return [
+					'ok'          => false,
+					'message'     => $info->get_error_message(),
+					'site_id'     => $sid,
+					'site_label'  => $label,
+					'errors'      => [],
+					'duration_ms' => (int) round( ( microtime( true ) - $started ) * 1000 ),
+				];
+			}
+			$target_locale = isset( $info['locale'] ) ? (string) $info['locale'] : '';
+		}
 
 		$translated = $this->translate_payload( $basepayload, $source_locale, $target_locale, $translator );
 		$payload    = $translated['payload'];

@@ -30,17 +30,19 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 	}
 
 	private function __construct() {
-		add_action( 'admin_menu', [ $this, 'add_menu' ] );
+		add_action( 'admin_menu', [ $this, 'add_menu' ], 12 );
 		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_assets' ] );
 		add_action( 'wp_ajax_heb_pp_bs_start', [ $this, 'ajax_start' ] );
 		add_action( 'wp_ajax_heb_pp_bs_status', [ $this, 'ajax_status' ] );
 		add_action( 'wp_ajax_heb_pp_bs_cancel', [ $this, 'ajax_cancel' ] );
+		add_action( 'wp_ajax_heb_pp_bs_retry', [ $this, 'ajax_retry' ] );
 	}
 
 	public function add_menu() {
-		add_management_page(
+		add_submenu_page(
+			Heb_Product_Publisher_Admin_Menu::PARENT_SLUG,
 			__( 'HEB Site Bootstrap', 'heb-product-publisher' ),
-			__( 'HEB Site Bootstrap', 'heb-product-publisher' ),
+			__( '站点 Bootstrap', 'heb-product-publisher' ),
 			'manage_options',
 			self::PAGE_SLUG,
 			[ $this, 'render_page' ]
@@ -51,7 +53,7 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 	 * @param string $hook Current page hook.
 	 */
 	public function enqueue_assets( $hook ) {
-		if ( 'tools_page_' . self::PAGE_SLUG !== $hook ) {
+		if ( Heb_Product_Publisher_Admin_Menu::hook_suffix( self::PAGE_SLUG ) !== $hook ) {
 			return;
 		}
 		wp_enqueue_style( 'heb-pp-bootstrap', HEB_PP_URL . 'assets/css/bootstrap.css', [], HEB_PP_VERSION );
@@ -63,7 +65,9 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 				'ajaxUrl' => admin_url( 'admin-ajax.php' ),
 				'nonce'   => wp_create_nonce( self::NONCE_ACTION ),
 				'i18n'    => [
-					'confirmStart'  => __( '确定要启动 Bootstrap？这会把主站所有 distributable 内容推送到目标站点。', 'heb-product-publisher' ),
+					'confirmStart'  => __( '确定要启动 Bootstrap？这会把主站 distributable 内容推送到目标站点。', 'heb-product-publisher' ),
+					'confirmDryRun' => __( 'Dry run 模式：只统计数量并验证连接，不会实际推送。继续？', 'heb-product-publisher' ),
+					'confirmRetry'  => __( '仅重试该 job 中失败的项？', 'heb-product-publisher' ),
 					'confirmCancel' => __( '取消该 Bootstrap job？已完成的任务不会回滚。', 'heb-product-publisher' ),
 					'starting'      => __( '启动中…', 'heb-product-publisher' ),
 					'selectSite'    => __( '请选择目标站点。', 'heb-product-publisher' ),
@@ -88,7 +92,7 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 			<?php if ( empty( $sites ) ) : ?>
 				<div class="notice notice-warning"><p>
 					<?php esc_html_e( '尚未配置远端站点。', 'heb-product-publisher' ); ?>
-					<a href="<?php echo esc_url( admin_url( 'options-general.php?page=heb-product-publisher' ) ); ?>"><?php esc_html_e( '去配置', 'heb-product-publisher' ); ?></a>
+					<a href="<?php echo esc_url( Heb_Product_Publisher_Admin_Menu::url() ); ?>"><?php esc_html_e( '去配置', 'heb-product-publisher' ); ?></a>
 				</p></div>
 			<?php else : ?>
 				<div class="card heb-pp-bs-start">
@@ -119,9 +123,11 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 									<label><input type="checkbox" id="heb-pp-bs-scope-terms" checked /> <?php esc_html_e( '分类（terms）', 'heb-product-publisher' ); ?></label><br />
 									<label><input type="checkbox" id="heb-pp-bs-scope-posts" checked /> <?php esc_html_e( '内容（products / solutions / pages）', 'heb-product-publisher' ); ?></label><br />
 									<label><input type="checkbox" id="heb-pp-bs-scope-settings" checked /> <?php esc_html_e( 'WordPress 全局设置（标题、描述、permalinks、首页）', 'heb-product-publisher' ); ?></label><br />
-									<label><input type="checkbox" id="heb-pp-bs-scope-menus" checked /> <?php esc_html_e( '导航菜单（含菜单项 object 反查）', 'heb-product-publisher' ); ?></label>
+									<label><input type="checkbox" id="heb-pp-bs-scope-menus" checked /> <?php esc_html_e( '导航菜单（含菜单项 object 反查）', 'heb-product-publisher' ); ?></label><br />
+									<label><input type="checkbox" id="heb-pp-bs-scope-menu-locations" /> <?php esc_html_e( '同时绑定主题菜单位置（危险：会覆盖子站 nav_menu_locations）', 'heb-product-publisher' ); ?></label><br />
+									<label><input type="checkbox" id="heb-pp-bs-dry-run" /> <?php esc_html_e( 'Dry run（仅探测连接 + 统计数量，不实际推送）', 'heb-product-publisher' ); ?></label>
 								</fieldset>
-								<p class="description"><?php esc_html_e( '推荐保持全部勾选，让目标站一次性获得"开站即可用"的完整内容。', 'heb-product-publisher' ); ?></p>
+								<p class="description"><?php esc_html_e( '推荐勾选 terms + posts；settings/menus 请确认子站为空站后再启用。菜单位置绑定默认关闭。', 'heb-product-publisher' ); ?></p>
 							</td>
 						</tr>
 					</table>
@@ -162,6 +168,21 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 										<button type="button" class="button button-small heb-pp-bs-details" data-job-id="<?php echo esc_attr( $rec['id'] ); ?>"><?php esc_html_e( '详情', 'heb-product-publisher' ); ?></button>
 										<?php if ( in_array( $rec['status'], [ Heb_Product_Publisher_Bootstrap_Status::STATUS_RUNNING, Heb_Product_Publisher_Bootstrap_Status::STATUS_QUEUED ], true ) ) : ?>
 											<button type="button" class="button button-small heb-pp-bs-cancel" data-job-id="<?php echo esc_attr( $rec['id'] ); ?>"><?php esc_html_e( '取消', 'heb-product-publisher' ); ?></button>
+										<?php endif; ?>
+										<?php
+										$err_count = isset( $rec['errors'] ) && is_array( $rec['errors'] ) ? count( $rec['errors'] ) : 0;
+										$can_retry = $err_count > 0 && in_array(
+											$rec['status'],
+											[
+												Heb_Product_Publisher_Bootstrap_Status::STATUS_DONE,
+												Heb_Product_Publisher_Bootstrap_Status::STATUS_DONE_WITH_ERRORS,
+												Heb_Product_Publisher_Bootstrap_Status::STATUS_FAILED,
+											],
+											true
+										);
+										if ( $can_retry ) :
+											?>
+											<button type="button" class="button button-small heb-pp-bs-retry" data-job-id="<?php echo esc_attr( $rec['id'] ); ?>"><?php esc_html_e( '↻ 重试失败项', 'heb-product-publisher' ); ?></button>
 										<?php endif; ?>
 									</td>
 								</tr>
@@ -209,10 +230,12 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 			wp_send_json_error( [ 'message' => __( '未选择站点。', 'heb-product-publisher' ) ] );
 		}
 		$opts = [
-			'scope_terms'    => ! empty( $_POST['scope_terms'] ),
-			'scope_posts'    => ! empty( $_POST['scope_posts'] ),
-			'scope_menus'    => ! empty( $_POST['scope_menus'] ),
-			'scope_settings' => ! empty( $_POST['scope_settings'] ),
+			'scope_terms'          => ! empty( $_POST['scope_terms'] ),
+			'scope_posts'          => ! empty( $_POST['scope_posts'] ),
+			'scope_menus'          => ! empty( $_POST['scope_menus'] ),
+			'scope_settings'       => ! empty( $_POST['scope_settings'] ),
+			'scope_menu_locations' => ! empty( $_POST['scope_menu_locations'] ),
+			'dry_run'              => ! empty( $_POST['dry_run'] ),
 		];
 		$res = Heb_Product_Publisher_Bootstrap_Queue::start( $site_id, $opts );
 		if ( ! empty( $res['error'] ) && empty( $res['job_id'] ) ) {
@@ -254,6 +277,7 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 					$rec['status'],
 					[
 						Heb_Product_Publisher_Bootstrap_Status::STATUS_DONE,
+						Heb_Product_Publisher_Bootstrap_Status::STATUS_DONE_WITH_ERRORS,
 						Heb_Product_Publisher_Bootstrap_Status::STATUS_FAILED,
 						Heb_Product_Publisher_Bootstrap_Status::STATUS_CANCELLED,
 					],
@@ -277,5 +301,21 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 			wp_send_json_error( [ 'message' => __( 'Job 已结束或不存在。', 'heb-product-publisher' ) ] );
 		}
 		wp_send_json_success( [ 'ok' => true ] );
+	}
+
+	public function ajax_retry() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( [ 'message' => __( '权限不足。', 'heb-product-publisher' ) ], 403 );
+		}
+		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
+		$job_id = isset( $_POST['job_id'] ) ? sanitize_text_field( wp_unslash( (string) $_POST['job_id'] ) ) : '';
+		if ( '' === $job_id ) {
+			wp_send_json_error( [ 'message' => __( 'job_id 必填。', 'heb-product-publisher' ) ] );
+		}
+		$res = Heb_Product_Publisher_Bootstrap_Queue::retry_failed( $job_id );
+		if ( ! empty( $res['error'] ) && empty( $res['job_id'] ) ) {
+			wp_send_json_error( [ 'message' => (string) $res['error'] ] );
+		}
+		wp_send_json_success( [ 'job_id' => (string) $res['job_id'] ] );
 	}
 }

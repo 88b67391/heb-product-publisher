@@ -16,6 +16,7 @@ class Heb_Product_Publisher_Delete_Cascade {
 
 	const AS_HOOK_POST = 'heb_pp_cascade_delete_post';
 	const AS_HOOK_TERM = 'heb_pp_cascade_delete_term';
+	const AS_GROUP     = 'heb-pp-cascade';
 
 	/** @var self|null */
 	private static $instance = null;
@@ -31,7 +32,6 @@ class Heb_Product_Publisher_Delete_Cascade {
 	}
 
 	private function __construct() {
-		// 永久删除前 enqueue（trash 不触发；用户只是想软删除时不该级联）。
 		add_action( 'before_delete_post', [ $this, 'on_before_delete_post' ], 10, 1 );
 		add_action( 'pre_delete_term', [ $this, 'on_pre_delete_term' ], 10, 2 );
 
@@ -61,12 +61,13 @@ class Heb_Product_Publisher_Delete_Cascade {
 			self::AS_HOOK_POST,
 			[
 				[
-					'post_type'    => (string) $post->post_type,
-					'source_id'    => (int) $post_id,
-					'source_site'  => $source_site,
+					'post_type'   => (string) $post->post_type,
+					'source_id'   => (int) $post_id,
+					'source_site' => $source_site,
+					'attempt'     => 1,
 				],
 			],
-			'heb-pp-bootstrap'
+			self::AS_GROUP
 		);
 	}
 
@@ -92,9 +93,10 @@ class Heb_Product_Publisher_Delete_Cascade {
 					'taxonomy'    => (string) $taxonomy,
 					'source_id'   => (int) $term_id,
 					'source_site' => $source_site,
+					'attempt'     => 1,
 				],
 			],
-			'heb-pp-bootstrap'
+			self::AS_GROUP
 		);
 	}
 
@@ -109,8 +111,9 @@ class Heb_Product_Publisher_Delete_Cascade {
 		if ( empty( $args['post_type'] ) || empty( $args['source_id'] ) || empty( $args['source_site'] ) ) {
 			return;
 		}
+		$attempt = isset( $args['attempt'] ) ? (int) $args['attempt'] : 1;
 		foreach ( Heb_Product_Publisher_Admin_Settings::remote_sites() as $site ) {
-			Heb_Product_Publisher_Remote_Client::post(
+			$res = Heb_Product_Publisher_Remote_Client::post(
 				$site,
 				'/delete-by-source',
 				[
@@ -121,6 +124,7 @@ class Heb_Product_Publisher_Delete_Cascade {
 				],
 				30
 			);
+			$this->log_cascade_result( 'post', $args, $site, $res, $attempt );
 		}
 	}
 
@@ -135,8 +139,9 @@ class Heb_Product_Publisher_Delete_Cascade {
 		if ( empty( $args['taxonomy'] ) || empty( $args['source_id'] ) || empty( $args['source_site'] ) ) {
 			return;
 		}
+		$attempt = isset( $args['attempt'] ) ? (int) $args['attempt'] : 1;
 		foreach ( Heb_Product_Publisher_Admin_Settings::remote_sites() as $site ) {
-			Heb_Product_Publisher_Remote_Client::post(
+			$res = Heb_Product_Publisher_Remote_Client::post(
 				$site,
 				'/delete-by-source',
 				[
@@ -147,6 +152,66 @@ class Heb_Product_Publisher_Delete_Cascade {
 				],
 				30
 			);
+			$this->log_cascade_result( 'term', $args, $site, $res, $attempt );
+		}
+	}
+
+	/**
+	 * @param string                       $kind    post|term.
+	 * @param array<string,mixed>          $args    Cascade args.
+	 * @param array<string,string>         $site    Remote site.
+	 * @param array<string,mixed>|\WP_Error $res    Remote response.
+	 * @param int                          $attempt Attempt number.
+	 * @return void
+	 */
+	private function log_cascade_result( $kind, array $args, array $site, $res, $attempt ) {
+		$site_label = isset( $site['label'] ) ? (string) $site['label'] : '';
+		$ok         = ! is_wp_error( $res );
+		$locked     = $ok && ! empty( $res['reason'] ) && 'locked' === (string) $res['reason'];
+		$deleted    = $ok && ! empty( $res['deleted'] );
+
+		if ( $deleted || $locked ) {
+			if ( class_exists( 'Heb_Product_Publisher_Log' ) ) {
+				Heb_Product_Publisher_Log::insert(
+					[
+						'post_id'    => 'post' === $kind ? (int) $args['source_id'] : 0,
+						'post_type'  => 'post' === $kind ? (string) $args['post_type'] : (string) $args['taxonomy'],
+						'post_title' => 'cascade_delete',
+						'site_id'    => isset( $site['id'] ) ? (string) $site['id'] : '',
+						'site_label' => $site_label,
+						'site_url'   => isset( $site['url'] ) ? (string) $site['url'] : '',
+						'status'     => $locked ? 'skipped_locked' : 'success',
+						'message'    => $locked ? 'cascade delete skipped (locked)' : 'cascade delete ok',
+					]
+				);
+			}
+			return;
+		}
+
+		$message = is_wp_error( $res )
+			? $res->get_error_message()
+			: ( isset( $res['reason'] ) ? (string) $res['reason'] : 'not deleted' );
+
+		if ( class_exists( 'Heb_Product_Publisher_Log' ) ) {
+			Heb_Product_Publisher_Log::insert(
+				[
+					'post_id'    => 'post' === $kind ? (int) $args['source_id'] : 0,
+					'post_type'  => 'post' === $kind ? (string) $args['post_type'] : (string) $args['taxonomy'],
+					'post_title' => 'cascade_delete',
+					'site_id'    => isset( $site['id'] ) ? (string) $site['id'] : '',
+					'site_label' => $site_label,
+					'site_url'   => isset( $site['url'] ) ? (string) $site['url'] : '',
+					'status'     => 'cascade_delete_failed',
+					'message'    => $message,
+				]
+			);
+		}
+
+		if ( $attempt < 3 && function_exists( 'as_schedule_single_action' ) ) {
+			$retry_args         = $args;
+			$retry_args['attempt'] = $attempt + 1;
+			$hook               = 'post' === $kind ? self::AS_HOOK_POST : self::AS_HOOK_TERM;
+			as_schedule_single_action( time() + ( 120 * $attempt ), $hook, [ $retry_args ], self::AS_GROUP );
 		}
 	}
 

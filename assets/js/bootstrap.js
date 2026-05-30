@@ -13,11 +13,12 @@
 
 		function startBootstrap() {
 			var siteId = $('#heb-pp-bs-site').val();
+			var dryRun = $('#heb-pp-bs-dry-run').is(':checked');
 			if (!siteId) {
 				window.alert(HebPPBootstrap.i18n.selectSite);
 				return;
 			}
-			if (!window.confirm(HebPPBootstrap.i18n.confirmStart)) {
+			if (!window.confirm(dryRun ? HebPPBootstrap.i18n.confirmDryRun : HebPPBootstrap.i18n.confirmStart)) {
 				return;
 			}
 			$startBtn.prop('disabled', true);
@@ -30,7 +31,9 @@
 				scope_terms: $('#heb-pp-bs-scope-terms').is(':checked') ? 1 : 0,
 				scope_posts: $('#heb-pp-bs-scope-posts').is(':checked') ? 1 : 0,
 				scope_menus: $('#heb-pp-bs-scope-menus').is(':checked') ? 1 : 0,
-				scope_settings: $('#heb-pp-bs-scope-settings').is(':checked') ? 1 : 0
+				scope_settings: $('#heb-pp-bs-scope-settings').is(':checked') ? 1 : 0,
+				scope_menu_locations: $('#heb-pp-bs-scope-menu-locations').is(':checked') ? 1 : 0,
+				dry_run: dryRun ? 1 : 0
 			}).done(function (res) {
 				if (res && res.success) {
 					$startMsg.html('<span style="color:#080;">Job created: <code>' + res.data.job_id.substring(0, 8) + '</code></span>');
@@ -55,6 +58,23 @@
 				job_id: jobId
 			}).done(function () {
 				pollJobs();
+			});
+		}
+
+		function retryJob(jobId) {
+			if (!window.confirm(HebPPBootstrap.i18n.confirmRetry)) {
+				return;
+			}
+			$.post(HebPPBootstrap.ajaxUrl, {
+				action: 'heb_pp_bs_retry',
+				nonce: HebPPBootstrap.nonce,
+				job_id: jobId
+			}).done(function (res) {
+				if (res && res.success) {
+					window.location.reload();
+				} else {
+					window.alert((res && res.data && res.data.message) || 'Retry failed');
+				}
 			});
 		}
 
@@ -118,6 +138,9 @@
 
 				if (job.errors && job.errors.length) {
 					html += '<h4 style="margin-top:14px;">Errors (' + job.errors.length + ')</h4>';
+					if (job.status === 'done_with_errors' || job.status === 'failed') {
+						html += '<p><button type="button" class="button heb-pp-bs-retry" data-job-id="' + escapeHtml(job.id) + '">↻ 重试失败项</button></p>';
+					}
 					html += '<table class="widefat" style="max-width:800px;"><thead><tr><th>Type</th><th>Source ID</th><th>Message</th></tr></thead><tbody>';
 					job.errors.slice(-30).forEach(function (e) {
 						html += '<tr><td>' + escapeHtml(e.type) + '</td><td>' + (e.source_id || '-') + '</td><td><code style="white-space:pre-wrap;">' + escapeHtml(e.message || '') + '</code></td></tr>';
@@ -137,7 +160,7 @@
 				}
 				$detailsBody.html(html);
 
-				var finished = (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled');
+				var finished = (job.status === 'done' || job.status === 'done_with_errors' || job.status === 'failed' || job.status === 'cancelled');
 				if (!finished && !pollDetailsTimer) {
 					pollDetailsTimer = setInterval(refreshDetails, 3000);
 				} else if (finished && pollDetailsTimer) {
@@ -156,6 +179,12 @@
 		$startBtn.on('click', startBootstrap);
 		$jobs.on('click', '.heb-pp-bs-cancel', function () {
 			cancelJob($(this).data('job-id'));
+		});
+		$jobs.on('click', '.heb-pp-bs-retry', function () {
+			retryJob($(this).data('job-id'));
+		});
+		$detailsBody.on('click', '.heb-pp-bs-retry', function () {
+			retryJob($(this).data('job-id'));
 		});
 		$jobs.on('click', '.heb-pp-bs-details', function () {
 			loadDetails($(this).data('job-id'));

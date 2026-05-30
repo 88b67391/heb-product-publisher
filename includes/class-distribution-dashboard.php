@@ -38,7 +38,7 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 	}
 
 	private function __construct() {
-		add_action( 'admin_menu', [ $this, 'add_menu' ] );
+		add_action( 'admin_menu', [ $this, 'add_menu' ], 11 );
 		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_assets' ] );
 		add_action( 'wp_ajax_heb_pp_dash_manifest', [ $this, 'ajax_manifest' ] );
 		add_action( 'wp_ajax_heb_pp_dash_resend', [ $this, 'ajax_resend' ] );
@@ -47,9 +47,10 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 	}
 
 	public function add_menu() {
-		add_management_page(
+		add_submenu_page(
+			Heb_Product_Publisher_Admin_Menu::PARENT_SLUG,
 			__( 'HEB Distribution Dashboard', 'heb-product-publisher' ),
-			__( 'HEB Distribution Dashboard', 'heb-product-publisher' ),
+			__( '分发总览', 'heb-product-publisher' ),
 			'manage_options',
 			self::PAGE_SLUG,
 			[ $this, 'render_page' ]
@@ -60,7 +61,7 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 	 * @param string $hook Current page hook.
 	 */
 	public function enqueue_assets( $hook ) {
-		if ( 'tools_page_' . self::PAGE_SLUG !== $hook ) {
+		if ( Heb_Product_Publisher_Admin_Menu::hook_suffix( self::PAGE_SLUG ) !== $hook ) {
 			return;
 		}
 		wp_enqueue_style( 'heb-pp-dashboard', HEB_PP_URL . 'assets/css/dashboard.css', [], HEB_PP_VERSION );
@@ -77,7 +78,8 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 					'resending'      => __( '重发中…', 'heb-product-publisher' ),
 					'sentDone'       => __( '已重发', 'heb-product-publisher' ),
 					'sentFailed'     => __( '重发失败', 'heb-product-publisher' ),
-					'confirmBulk'    => __( '把选中的项目重新分发到所有"未同步/过期"的站点？', 'heb-product-publisher' ),
+					'confirmBulk'    => __( '把选中的项目重新分发到"未同步/过期/锁定"的站点？', 'heb-product-publisher' ),
+					'clearCache'     => __( '清除 manifest 缓存', 'heb-product-publisher' ),
 				],
 			]
 		);
@@ -102,6 +104,7 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 
 			<p>
 				<button type="button" class="button" id="heb-pp-dash-refresh"><?php esc_html_e( '刷新所有站点 manifest', 'heb-product-publisher' ); ?></button>
+				<button type="button" class="button" id="heb-pp-dash-clear-cache"><?php esc_html_e( '清除 manifest 缓存', 'heb-product-publisher' ); ?></button>
 				<button type="button" class="button" id="heb-pp-dash-bulk-resend" disabled><?php esc_html_e( '批量重发选中', 'heb-product-publisher' ); ?></button>
 				<span style="margin-left:8px;" id="heb-pp-dash-status"></span>
 			</p>
@@ -147,6 +150,9 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 							data-modified="<?php echo esc_attr( $row['modified'] ); ?>"
 							data-type="<?php echo esc_attr( $row['type'] ); ?>"
 							data-kind="<?php echo esc_attr( $kind ); ?>"
+							<?php if ( 'terms' === $kind ) : ?>
+								data-sync-hash="<?php echo esc_attr( isset( $row['sync_hash'] ) ? $row['sync_hash'] : '' ); ?>"
+							<?php endif; ?>
 						>
 							<td class="check-column"><input type="checkbox" class="heb-pp-dash-row-check" /></td>
 							<td>
@@ -221,11 +227,12 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 			}
 			foreach ( $terms as $term ) {
 				$out[] = [
-					'id'       => (int) $term->term_id,
-					'type'     => $tx,
-					'title'    => (string) $term->name,
-					'modified' => time(), // terms 没有 modified time，用当前时间作占位（dashboard outdated 计算靠不上 term）。
-					'edit_url' => admin_url( 'term.php?taxonomy=' . rawurlencode( $tx ) . '&tag_ID=' . $term->term_id ),
+					'id'        => (int) $term->term_id,
+					'type'      => $tx,
+					'title'     => (string) $term->name,
+					'modified'  => 0,
+					'sync_hash' => md5( (string) $term->name . '|' . (string) $term->slug ),
+					'edit_url'  => admin_url( 'term.php?taxonomy=' . rawurlencode( $tx ) . '&tag_ID=' . $term->term_id ),
 				];
 			}
 		}
@@ -274,7 +281,7 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 	 * AJAX：重发单个 post / term 到所有目标站点。
 	 */
 	public function ajax_resend() {
-		if ( ! current_user_can( 'edit_posts' ) ) {
+		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_send_json_error( [ 'message' => __( '权限不足。', 'heb-product-publisher' ) ], 403 );
 		}
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
@@ -368,6 +375,9 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 			}
 			$source_id = isset( $item['source_id'] ) ? (int) $item['source_id'] : 0;
 			$kind      = isset( $item['kind'] ) ? sanitize_key( (string) $item['kind'] ) : 'posts';
+			$site_ids  = isset( $item['site_ids'] ) && is_array( $item['site_ids'] )
+				? array_map( 'sanitize_text_field', wp_unslash( $item['site_ids'] ) )
+				: [];
 			if ( $source_id <= 0 ) {
 				continue;
 			}
@@ -377,6 +387,7 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 					[
 						'source_id' => $source_id,
 						'kind'      => $kind,
+						'site_ids'  => $site_ids,
 					],
 				],
 				Heb_Product_Publisher_Bootstrap_Queue::GROUP
@@ -401,12 +412,24 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 		}
 		$source_id = isset( $args['source_id'] ) ? (int) $args['source_id'] : 0;
 		$kind      = isset( $args['kind'] ) ? sanitize_key( (string) $args['kind'] ) : 'posts';
+		$site_ids  = isset( $args['site_ids'] ) && is_array( $args['site_ids'] )
+			? array_map( 'sanitize_text_field', $args['site_ids'] )
+			: [];
 		if ( $source_id <= 0 ) {
 			return;
 		}
 		$sites = Heb_Product_Publisher_Admin_Settings::remote_sites();
 		if ( empty( $sites ) ) {
 			return;
+		}
+		if ( ! empty( $site_ids ) ) {
+			$filtered = [];
+			foreach ( $sites as $site ) {
+				if ( in_array( (string) $site['id'], $site_ids, true ) ) {
+					$filtered[] = $site;
+				}
+			}
+			$sites = $filtered;
 		}
 		$translator = new Heb_Product_Publisher_Translator();
 		if ( 'terms' === $kind ) {

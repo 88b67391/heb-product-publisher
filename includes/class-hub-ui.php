@@ -48,7 +48,7 @@ class Heb_Product_Publisher_Hub_UI {
 			return;
 		}
 
-		if ( 'settings_page_heb-product-publisher' === $hook ) {
+		if ( Heb_Product_Publisher_Admin_Menu::hook_suffix( Heb_Product_Publisher_Admin_Menu::PARENT_SLUG ) === $hook ) {
 			wp_enqueue_style( 'heb-pp-settings', HEB_PP_URL . 'assets/css/settings.css', [], HEB_PP_VERSION );
 			wp_enqueue_script( 'heb-pp-settings', HEB_PP_URL . 'assets/js/settings.js', [ 'jquery' ], HEB_PP_VERSION, true );
 			wp_localize_script(
@@ -132,7 +132,11 @@ class Heb_Product_Publisher_Hub_UI {
 		$sites          = Heb_Product_Publisher_Admin_Settings::remote_sites();
 		$source_locale  = Heb_Product_Publisher_Admin_Settings::source_locale();
 		$or_key_ready   = '' !== Heb_Product_Publisher_Admin_Settings::openrouter_key();
-		$settings_url   = admin_url( 'options-general.php?page=heb-product-publisher' );
+		$settings_url   = Heb_Product_Publisher_Admin_Menu::url();
+		$distributions  = get_post_meta( $post->ID, '_heb_pp_distributions', true );
+		if ( ! is_array( $distributions ) ) {
+			$distributions = [];
+		}
 		?>
 		<div class="heb-pp-hub-box" data-post-id="<?php echo esc_attr( $post->ID ); ?>">
 			<p class="heb-pp-hub-meta">
@@ -188,6 +192,35 @@ class Heb_Product_Publisher_Hub_UI {
 				<?php endif; ?>
 
 				<div id="heb-pp-result" class="heb-pp-result" aria-live="polite"></div>
+
+				<?php if ( ! empty( $distributions ) ) : ?>
+					<div class="heb-pp-hub-history">
+						<p><strong><?php esc_html_e( '上次分发记录', 'heb-product-publisher' ); ?></strong></p>
+						<ul class="heb-pp-hub-history-list">
+							<?php foreach ( $distributions as $sid => $dist ) :
+								if ( ! is_array( $dist ) ) {
+									continue;
+								}
+								$status = isset( $dist['last_status'] ) ? (string) $dist['last_status'] : '';
+								$status_class = in_array( $status, [ 'success', 'skipped_locked' ], true ) ? 'ok' : ( 'warn' === $status ? 'warn' : 'err' );
+								?>
+								<li class="heb-pp-hub-history-item heb-pp-<?php echo esc_attr( $status_class ); ?>">
+									<strong><?php echo esc_html( isset( $dist['label'] ) ? $dist['label'] : $sid ); ?></strong>
+									<?php if ( ! empty( $dist['last_sent_at'] ) ) : ?>
+										· <?php echo esc_html( gmdate( 'Y-m-d H:i', (int) $dist['last_sent_at'] ) ); ?>
+									<?php endif; ?>
+									· <code><?php echo esc_html( $status ); ?></code>
+									<?php if ( ! empty( $dist['remote_edit_url'] ) ) : ?>
+										· <a href="<?php echo esc_url( $dist['remote_edit_url'] ); ?>" target="_blank" rel="noopener"><?php esc_html_e( '远端编辑', 'heb-product-publisher' ); ?></a>
+									<?php endif; ?>
+									<?php if ( ! empty( $dist['pending_media'] ) ) : ?>
+										· <span class="heb-pp-warn">⏳ <?php echo esc_html( (string) (int) $dist['pending_media'] ); ?> media</span>
+									<?php endif; ?>
+								</li>
+							<?php endforeach; ?>
+						</ul>
+					</div>
+				<?php endif; ?>
 			<?php endif; ?>
 		</div>
 		<?php
@@ -223,6 +256,53 @@ class Heb_Product_Publisher_Hub_UI {
 				$tax_out[ $tax ] = array_values( array_unique( $clean ) );
 			}
 			$out[ $site_id ] = $tax_out;
+		}
+		return $out;
+	}
+
+	/**
+	 * 将 UI 分类 override（slug 数组）合并进 build_payload 的对象数组，保留 source_term_id 映射。
+	 *
+	 * @param array<string, array<int, array<string,mixed>>> $base_taxonomies From build_payload.
+	 * @param array<string, array<int, string>>            $overrides       Per-tax slug selections.
+	 * @return array<string, array<int, array<string,mixed>>>
+	 */
+	private function merge_taxonomy_overrides( array $base_taxonomies, array $overrides ) {
+		$out = $base_taxonomies;
+		foreach ( $overrides as $tax => $slugs ) {
+			$tax = sanitize_key( (string) $tax );
+			if ( '' === $tax || ! is_array( $slugs ) || ! isset( $base_taxonomies[ $tax ] ) ) {
+				continue;
+			}
+			$allowed = array_flip(
+				array_values(
+					array_unique(
+						array_filter(
+							array_map(
+								static function ( $s ) {
+									return sanitize_title( (string) $s );
+								},
+								$slugs
+							)
+						)
+					)
+				)
+			);
+			$filtered = [];
+			foreach ( (array) $base_taxonomies[ $tax ] as $row ) {
+				if ( ! is_array( $row ) ) {
+					continue;
+				}
+				$slug = isset( $row['slug_fallback'] ) ? sanitize_title( (string) $row['slug_fallback'] ) : '';
+				if ( '' !== $slug && isset( $allowed[ $slug ] ) ) {
+					$filtered[] = $row;
+				}
+			}
+			if ( ! empty( $filtered ) ) {
+				$out[ $tax ] = $filtered;
+			} else {
+				unset( $out[ $tax ] );
+			}
 		}
 		return $out;
 	}
@@ -272,6 +352,9 @@ class Heb_Product_Publisher_Hub_UI {
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
 
 		$post_id  = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+		if ( $post_id <= 0 || ! current_user_can( 'edit_post', $post_id ) ) {
+			wp_send_json_error( [ 'message' => __( '无权编辑该文章。', 'heb-product-publisher' ) ], 403 );
+		}
 		$site_ids = isset( $_POST['site_ids'] ) && is_array( $_POST['site_ids'] )
 			? array_map( 'sanitize_text_field', wp_unslash( $_POST['site_ids'] ) )
 			: [];
@@ -509,7 +592,7 @@ class Heb_Product_Publisher_Hub_UI {
 	 */
 	private function refresh_lang_map( $post_id, array $basepayload, array $site, $target_locale, array $result ) {
 		if ( empty( $result['ok'] ) ) {
-			return;
+			return [];
 		}
 		$lang = $this->locale_to_lang( $target_locale );
 		$url  = isset( $result['permalink'] ) ? esc_url_raw( (string) $result['permalink'] ) : '';
@@ -517,12 +600,12 @@ class Heb_Product_Publisher_Hub_UI {
 			$url = rtrim( (string) $site['url'], '/' ) . '/?p=' . (int) $result['post_id'];
 		}
 		if ( '' === $lang || '' === $url ) {
-			return;
+			return [];
 		}
 		$map          = $this->get_lang_map( $post_id, $basepayload );
 		$map[ $lang ] = $url;
 		update_post_meta( $post_id, '_heb_pp_lang_map', $map );
-		$this->sync_lang_map_to_all_sites( $basepayload, $map );
+		return $this->sync_lang_map_to_all_sites( $basepayload, $map );
 	}
 
 	/**
@@ -534,10 +617,11 @@ class Heb_Product_Publisher_Hub_UI {
 		$source_post_id = isset( $basepayload['source_post_id'] ) ? (int) $basepayload['source_post_id'] : 0;
 		$source_site    = isset( $basepayload['source_site'] ) ? sanitize_text_field( (string) $basepayload['source_site'] ) : '';
 		if ( '' === $post_type || $source_post_id <= 0 || '' === $source_site || empty( $lang_map ) ) {
-			return;
+			return [];
 		}
+		$failures = [];
 		foreach ( Heb_Product_Publisher_Admin_Settings::remote_sites() as $s ) {
-			Heb_Product_Publisher_Remote_Client::post(
+			$res = Heb_Product_Publisher_Remote_Client::post(
 				$s,
 				'/sync-lang-map',
 				[
@@ -548,7 +632,78 @@ class Heb_Product_Publisher_Hub_UI {
 				],
 				15
 			);
+			if ( is_wp_error( $res ) ) {
+				$failures[] = sprintf(
+					'%s: %s',
+					isset( $s['label'] ) ? (string) $s['label'] : '',
+					$res->get_error_message()
+				);
+			}
 		}
+		return $failures;
+	}
+
+	/**
+	 * 分发前确保 payload 中 term 的父级已推送到目标站（按层级顺序）。
+	 *
+	 * @param array<string,mixed>              $basepayload   Payload.
+	 * @param array<string,string>             $site          Remote site.
+	 * @param Heb_Product_Publisher_Translator $translator    Translator.
+	 * @return array<int,string> Warnings.
+	 */
+	private function ensure_parent_terms_synced( array $basepayload, array $site, Heb_Product_Publisher_Translator $translator ) {
+		$warnings  = [];
+		$taxonomies = isset( $basepayload['taxonomies'] ) && is_array( $basepayload['taxonomies'] )
+			? $basepayload['taxonomies']
+			: [];
+		if ( empty( $taxonomies ) ) {
+			return $warnings;
+		}
+
+		$pending = [];
+		foreach ( $taxonomies as $rows ) {
+			foreach ( (array) $rows as $row ) {
+				if ( ! is_array( $row ) ) {
+					continue;
+				}
+				$parent_id = isset( $row['source_parent_term_id'] ) ? (int) $row['source_parent_term_id'] : 0;
+				if ( $parent_id > 0 ) {
+					$pending[ $parent_id ] = true;
+				}
+			}
+		}
+
+		$term_sync = new Heb_Product_Publisher_Term_Sync();
+		$source_locale = isset( $basepayload['source_locale'] ) ? (string) $basepayload['source_locale'] : '';
+		$depth       = 0;
+		while ( ! empty( $pending ) && $depth < 12 ) {
+			$depth++;
+			$batch = array_keys( $pending );
+			$pending = [];
+			foreach ( $batch as $term_id ) {
+				$term_id = (int) $term_id;
+				$tp = Heb_Product_Publisher_Term_Sync::build_payload( $term_id );
+				if ( empty( $tp ) ) {
+					continue;
+				}
+				$res = $term_sync->distribute_to_site( $term_id, $tp, $source_locale, $site, $translator );
+				if ( empty( $res['ok'] ) ) {
+					$warnings[] = sprintf(
+						/* translators: 1: term id, 2: error message */
+						__( '父级 term #%1$d 同步失败：%2$s', 'heb-product-publisher' ),
+						$term_id,
+						isset( $res['message'] ) ? (string) $res['message'] : 'unknown'
+					);
+				}
+				if ( ! empty( $tp['source_parent_term_id'] ) ) {
+					$pp = (int) $tp['source_parent_term_id'];
+					if ( $pp > 0 ) {
+						$pending[ $pp ] = true;
+					}
+				}
+			}
+		}
+		return $warnings;
 	}
 
 	/**
@@ -591,8 +746,13 @@ class Heb_Product_Publisher_Hub_UI {
 		$payload['lang_map']      = $this->get_lang_map( $post_id, $basepayload );
 
 		if ( isset( $site_overrides[ $sid ] ) && is_array( $site_overrides[ $sid ] ) ) {
-			$payload['taxonomies'] = $site_overrides[ $sid ];
+			$base_tax = isset( $basepayload['taxonomies'] ) && is_array( $basepayload['taxonomies'] )
+				? $basepayload['taxonomies']
+				: [];
+			$payload['taxonomies'] = $this->merge_taxonomy_overrides( $base_tax, $site_overrides[ $sid ] );
 		}
+
+		$parent_warnings = $this->ensure_parent_terms_synced( $payload, $site, $translator );
 
 		if ( '' !== $target_locale && ! Heb_Product_Publisher_Translator::same_language( $source_locale, $target_locale ) ) {
 			$tr = $translator->translate_payload( $payload, $source_locale, $target_locale );
@@ -640,13 +800,45 @@ class Heb_Product_Publisher_Hub_UI {
 		}
 
 		$pending_media = isset( $push['pending_media'] ) ? (int) $push['pending_media'] : 0;
-		$warns         = $translate_errors;
+		$warns         = array_merge( $parent_warnings, $translate_errors );
+
+		if ( ! empty( $push['locked'] ) ) {
+			$warns[] = isset( $push['message'] ) ? (string) $push['message'] : __( '目标 post 已被本地锁定，跳过更新。', 'heb-product-publisher' );
+			$r = [
+				'ok'            => false,
+				'locked'        => true,
+				'status'        => 'skipped_locked',
+				'post_id'       => isset( $push['post_id'] ) ? (int) $push['post_id'] : 0,
+				'edit_url'      => isset( $push['edit_url'] ) ? (string) $push['edit_url'] : '',
+				'permalink'     => isset( $push['permalink'] ) ? (string) $push['permalink'] : '',
+				'created'       => false,
+				'translate'     => $translate_stats,
+				'warn'          => $warns,
+				'locale'        => $target_locale,
+				'pending_media' => $pending_media,
+				'message'       => isset( $push['message'] ) ? (string) $push['message'] : '',
+			];
+			$this->record_distribution( $post_id, $site, $target_locale, $r, $translate_stats, (int) round( ( microtime( true ) - $started ) * 1000 ), $basepayload );
+			return $r;
+		}
+
 		if ( $pending_media > 0 ) {
 			$warns[] = sprintf(
 				/* translators: %d: number of remote images still being downloaded asynchronously on the receiver */
 				__( '主站点已写入，子站后台正在异步下载 %d 张 Elementor 图片（不阻塞，可关闭页面）。', 'heb-product-publisher' ),
 				$pending_media
 			);
+		}
+		if ( ! empty( $translate_stats['strings'] ) && isset( $translate_stats['translated'] ) ) {
+			$ratio = (int) $translate_stats['translated'] / max( 1, (int) $translate_stats['strings'] );
+			if ( $ratio < 0.85 && ! empty( $translate_errors ) ) {
+				$warns[] = sprintf(
+					/* translators: 1: translated count, 2: total strings */
+					__( '翻译不完整（%1$d/%2$d），部分内容可能仍为源语言。', 'heb-product-publisher' ),
+					(int) $translate_stats['translated'],
+					(int) $translate_stats['strings']
+				);
+			}
 		}
 		$r = [
 			'ok'            => true,
@@ -659,8 +851,15 @@ class Heb_Product_Publisher_Hub_UI {
 			'locale'        => $target_locale,
 			'pending_media' => $pending_media,
 		];
+		$lang_map_failures = $this->refresh_lang_map( $post_id, $basepayload, $site, $target_locale, $r );
+		foreach ( $lang_map_failures as $lf ) {
+			$r['warn'][] = sprintf(
+				/* translators: %s: remote site error */
+				__( 'hreflang 同步失败：%s', 'heb-product-publisher' ),
+				$lf
+			);
+		}
 		$this->record_distribution( $post_id, $site, $target_locale, $r, $translate_stats, (int) round( ( microtime( true ) - $started ) * 1000 ), $basepayload );
-		$this->refresh_lang_map( $post_id, $basepayload, $site, $target_locale, $r );
 		return $r;
 	}
 
@@ -680,11 +879,21 @@ class Heb_Product_Publisher_Hub_UI {
 			return;
 		}
 		$ok             = ! empty( $result['ok'] );
+		$locked         = ! empty( $result['locked'] );
 		$remote_post_id = isset( $result['post_id'] ) ? (int) $result['post_id'] : 0;
 		$edit_url       = isset( $result['edit_url'] ) ? (string) $result['edit_url'] : '';
 		$message        = $ok ? '' : (string) ( isset( $result['message'] ) ? $result['message'] : '' );
+		if ( $locked ) {
+			$message = isset( $result['message'] ) ? (string) $result['message'] : 'locked';
+		}
 		if ( $ok && ! empty( $result['warn'] ) && is_array( $result['warn'] ) ) {
 			$message = 'warn: ' . wp_json_encode( array_slice( $result['warn'], 0, 5 ) );
+		}
+		$log_status = 'error';
+		if ( $locked ) {
+			$log_status = 'skipped_locked';
+		} elseif ( $ok ) {
+			$log_status = ! empty( $result['warn'] ) ? 'warn' : 'success';
 		}
 
 		Heb_Product_Publisher_Log::insert(
@@ -696,12 +905,12 @@ class Heb_Product_Publisher_Hub_UI {
 				'site_label'         => isset( $site['label'] ) ? (string) $site['label'] : '',
 				'site_url'           => isset( $site['url'] ) ? (string) $site['url'] : '',
 				'target_locale'      => (string) $locale,
-				'status'             => $ok ? 'success' : 'error',
+				'status'             => $log_status,
 				'message'            => $message,
 				'remote_post_id'     => $remote_post_id,
 				'remote_edit_url'    => $edit_url,
 				'translated_strings' => isset( $stats['translated'] ) ? (int) $stats['translated'] : 0,
-				'translated_total'   => isset( $stats['total'] ) ? (int) $stats['total'] : 0,
+				'translated_total'   => isset( $stats['strings'] ) ? (int) $stats['strings'] : 0,
 				'duration_ms'        => (int) $duration_ms,
 			]
 		);
@@ -712,15 +921,17 @@ class Heb_Product_Publisher_Hub_UI {
 		}
 		$site_id = isset( $site['id'] ) ? (string) $site['id'] : '';
 		if ( '' !== $site_id ) {
+			$dist_status = $locked ? 'skipped_locked' : ( $ok ? ( ! empty( $result['warn'] ) ? 'warn' : 'success' ) : 'error' );
 			$distributions[ $site_id ] = [
 				'label'          => isset( $site['label'] ) ? (string) $site['label'] : '',
 				'url'            => isset( $site['url'] ) ? (string) $site['url'] : '',
 				'locale'         => (string) $locale,
-				'last_status'    => $ok ? 'success' : 'error',
+				'last_status'    => $dist_status,
 				'last_message'   => $message,
 				'last_sent_at'   => time(),
 				'remote_post_id' => $remote_post_id,
 				'remote_edit_url'=> $edit_url,
+				'pending_media'  => isset( $result['pending_media'] ) ? (int) $result['pending_media'] : 0,
 			];
 			update_post_meta( $post_id, '_heb_pp_distributions', $distributions );
 		}

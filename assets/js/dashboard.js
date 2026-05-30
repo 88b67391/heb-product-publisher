@@ -2,9 +2,8 @@
 	'use strict';
 
 	$(function () {
-		var manifests = {}; // siteId → { posts: { sourceId+type: row }, terms: { sourceId+tax: row } }
+		var manifests = {};
 
-		// Build map by source_post_id and post_type (or source_term_id + taxonomy).
 		function indexManifest(data) {
 			var posts = {};
 			var terms = {};
@@ -22,13 +21,42 @@
 		function classifyPost(remote, localModified) {
 			if (!remote) { return { code: 'not_sent', icon: '—', label: 'not distributed', color: '#999' }; }
 			if (remote.locked) { return { code: 'locked', icon: '🔒', label: 'locked locally', color: '#b80' }; }
+			if (remote.media_pending > 0) {
+				return { code: 'media_pending', icon: '⏳', label: 'synced, media pending (' + remote.media_pending + ')', color: '#08a' };
+			}
 			if (remote.modified < localModified) { return { code: 'outdated', icon: '⊘', label: 'outdated', color: '#d94' }; }
 			return { code: 'synced', icon: '✓', label: 'synced', color: '#080' };
 		}
 
-		function classifyTerm(remote) {
+		function classifyTerm(remote, localHash) {
 			if (!remote) { return { code: 'not_sent', icon: '—', label: 'not distributed', color: '#999' }; }
+			if (localHash && remote.sync_hash && remote.sync_hash !== localHash) {
+				return { code: 'outdated', icon: '⊘', label: 'outdated (name/slug changed)', color: '#d94' };
+			}
 			return { code: 'synced', icon: '✓', label: 'synced', color: '#080' };
+		}
+
+		function resendTargetsForRow($row) {
+			var kind = $row.data('kind');
+			var type = $row.data('type');
+			var sourceId = parseInt($row.data('source-id'), 10);
+			var localModified = parseInt($row.data('modified'), 10);
+			var localHash = $row.data('sync-hash') || '';
+			var siteIds = [];
+
+			$row.find('.heb-pp-dash-cell').each(function () {
+				var $cell = $(this);
+				var siteId = $cell.data('site-id');
+				var manifest = manifests[siteId];
+				if (!manifest) { return; }
+				var key = type + ':' + sourceId;
+				var remote = (kind === 'terms') ? manifest.terms[key] : manifest.posts[key];
+				var c = (kind === 'terms') ? classifyTerm(remote, localHash) : classifyPost(remote, localModified);
+				if (c.code === 'not_sent' || c.code === 'outdated' || c.code === 'locked' || c.code === 'media_pending') {
+					siteIds.push(siteId);
+				}
+			});
+			return siteIds;
 		}
 
 		function applyCells() {
@@ -38,6 +66,7 @@
 				var type = $row.data('type');
 				var sourceId = parseInt($row.data('source-id'), 10);
 				var localModified = parseInt($row.data('modified'), 10);
+				var localHash = $row.data('sync-hash') || '';
 
 				$row.find('.heb-pp-dash-cell').each(function () {
 					var $cell = $(this);
@@ -50,17 +79,24 @@
 						return;
 					}
 
-					var key = (kind === 'terms' ? (type + ':' + sourceId) : (type + ':' + sourceId));
-					var remote = (kind === 'terms' ? manifest.terms[key] : manifest.posts[key]);
-					var c = (kind === 'terms') ? classifyTerm(remote) : classifyPost(remote, localModified);
+					var key = type + ':' + sourceId;
+					var remote = (kind === 'terms') ? manifest.terms[key] : manifest.posts[key];
+					var c = (kind === 'terms') ? classifyTerm(remote, localHash) : classifyPost(remote, localModified);
 
 					var inner = c.icon;
 					if (remote && remote.edit_url) {
 						inner = '<a href="' + remote.edit_url + '" target="_blank" rel="noopener" title="' + (remote.permalink || '') + '" style="color:' + c.color + ';text-decoration:none;">' + c.icon + '</a>';
 					}
+					var title = c.label;
+					if (remote && remote.modified) {
+						title += ' · remote modified=' + new Date(remote.modified * 1000).toLocaleString();
+					}
+					if (remote && remote.media_pending > 0) {
+						title += ' · pending media=' + remote.media_pending;
+					}
 					$span
 						.html(inner)
-						.attr('title', c.label + (remote && remote.modified ? ' · remote modified=' + new Date(remote.modified * 1000).toLocaleString() : ''))
+						.attr('title', title)
 						.css('color', c.color)
 						.attr('data-code', c.code);
 				});
@@ -99,16 +135,20 @@
 			});
 		}
 
-		function resend(sourceId, kind, $btn) {
+		function resend(sourceId, kind, siteIds, $btn) {
 			$btn.prop('disabled', true);
 			var oldText = $btn.text();
 			$btn.text(HebPPDashboard.i18n.resending);
-			$.post(HebPPDashboard.ajaxUrl, {
+			var data = {
 				action: 'heb_pp_dash_resend',
 				nonce: HebPPDashboard.nonce,
 				source_id: sourceId,
 				kind: kind
-			}).done(function (res) {
+			};
+			if (siteIds && siteIds.length) {
+				data['site_ids[]'] = siteIds;
+			}
+			$.post(HebPPDashboard.ajaxUrl, data).done(function (res) {
 				if (res && res.success) {
 					$btn.text(HebPPDashboard.i18n.sentDone).css('color', '#080');
 					loadAllManifests(true);
@@ -129,9 +169,12 @@
 			var items = [];
 			$('.heb-pp-dash-row-check:checked').each(function () {
 				var $row = $(this).closest('.heb-pp-dash-row');
+				var siteIds = resendTargetsForRow($row);
+				if (!siteIds.length) { return; }
 				items.push({
 					source_id: parseInt($row.data('source-id'), 10),
-					kind: $row.data('kind')
+					kind: $row.data('kind'),
+					site_ids: siteIds
 				});
 			});
 			if (items.length === 0) { return; }
@@ -147,12 +190,29 @@
 			});
 		}
 
-		// Wire up.
+		function clearCache() {
+			$.post(HebPPDashboard.ajaxUrl, {
+				action: 'heb_pp_dash_clear_cache',
+				nonce: HebPPDashboard.nonce
+			}).done(function () {
+				loadAllManifests(true);
+			});
+		}
+
 		$('#heb-pp-dash-refresh').on('click', function () { loadAllManifests(true); });
+		$('#heb-pp-dash-clear-cache').on('click', clearCache);
 		$('#heb-pp-dash-bulk-resend').on('click', bulkResend);
 		$(document).on('click', '.heb-pp-dash-resend', function () {
 			var $btn = $(this);
-			resend(parseInt($btn.data('source-id'), 10), $btn.data('kind'), $btn);
+			var $row = $btn.closest('.heb-pp-dash-row');
+			var siteIds = resendTargetsForRow($row);
+			if (!siteIds.length) {
+				siteIds = [];
+				$row.find('.heb-pp-dash-cell').each(function () {
+					siteIds.push($(this).data('site-id'));
+				});
+			}
+			resend(parseInt($btn.data('source-id'), 10), $btn.data('kind'), siteIds, $btn);
 		});
 		$(document).on('change', '.heb-pp-dash-select-all', function () {
 			var checked = this.checked;

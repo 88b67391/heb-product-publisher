@@ -176,7 +176,7 @@ class Heb_Product_Publisher_Menu_Sync {
 	 * @param Heb_Product_Publisher_Translator $translator    Translator.
 	 * @return array<string,mixed>
 	 */
-	public function distribute_to_site( $menu_id, array $basepayload, $source_locale, array $site, Heb_Product_Publisher_Translator $translator ) {
+	public function distribute_to_site( $menu_id, array $basepayload, $source_locale, array $site, Heb_Product_Publisher_Translator $translator, $bind_theme_locations = true ) {
 		$started = microtime( true );
 		$sid     = isset( $site['id'] ) ? (string) $site['id'] : '';
 		$label   = isset( $site['label'] ) ? (string) $site['label'] : $sid;
@@ -184,12 +184,26 @@ class Heb_Product_Publisher_Menu_Sync {
 		$target_locale = isset( $site['locale_override'] ) && '' !== $site['locale_override']
 			? (string) $site['locale_override']
 			: '';
+		if ( '' === $target_locale ) {
+			$info = Heb_Product_Publisher_Remote_Client::post( $site, '/site-info', [], 15 );
+			if ( is_wp_error( $info ) ) {
+				return [
+					'ok'          => false,
+					'message'     => $info->get_error_message(),
+					'site_id'     => $sid,
+					'site_label'  => $label,
+					'duration_ms' => (int) round( ( microtime( true ) - $started ) * 1000 ),
+				];
+			}
+			$target_locale = isset( $info['locale'] ) ? (string) $info['locale'] : '';
+		}
 
 		$translated = $this->translate_payload( $basepayload, $source_locale, $target_locale, $translator );
 		$payload    = $translated['payload'];
 		$errors     = $translated['errors'];
 
-		$payload['target_url_host'] = wp_parse_url( $site['url'], PHP_URL_HOST );
+		$payload['target_url_host']      = wp_parse_url( $site['url'], PHP_URL_HOST );
+		$payload['bind_theme_locations'] = (bool) $bind_theme_locations;
 
 		$timeout = Heb_Product_Publisher_Admin_Settings::site_timeout( $site );
 		$res     = Heb_Product_Publisher_Remote_Client::post( $site, '/import-menu', $payload, $timeout );
