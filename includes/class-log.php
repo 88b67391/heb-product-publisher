@@ -181,6 +181,35 @@ class Heb_Product_Publisher_Log {
 	}
 
 	/**
+	 * 日志 message 列展示：兼容旧版 warn JSON，输出可读中文。
+	 *
+	 * @param string $message Raw message.
+	 * @return string
+	 */
+	public static function format_message( $message ) {
+		$message = trim( (string) $message );
+		if ( '' === $message ) {
+			return '';
+		}
+		if ( 0 === strpos( $message, 'warn: ' ) ) {
+			$json = substr( $message, 6 );
+			$arr  = json_decode( $json, true );
+			if ( is_array( $arr ) ) {
+				return implode( ' ', array_map( 'strval', $arr ) );
+			}
+		}
+		return $message;
+	}
+
+	/**
+	 * @param string $status Log status.
+	 * @return bool
+	 */
+	public static function is_successful_status( $status ) {
+		return in_array( (string) $status, [ 'success', 'warn' ], true );
+	}
+
+	/**
 	 * 统计汇总。
 	 *
 	 * @return array<string,int>
@@ -188,10 +217,11 @@ class Heb_Product_Publisher_Log {
 	public static function summary() {
 		global $wpdb;
 		$t    = self::table();
-		$row  = $wpdb->get_row( "SELECT COUNT(*) total, SUM(status='success') ok, SUM(status='error') err, SUM(translated_strings) strs FROM {$t}" ); // phpcs:ignore WordPress.DB
+		$row  = $wpdb->get_row( "SELECT COUNT(*) total, SUM(status='success') ok, SUM(status='warn') warn, SUM(status='error') err, SUM(translated_strings) strs FROM {$t}" ); // phpcs:ignore WordPress.DB
 		return [
 			'total'   => $row ? (int) $row->total : 0,
-			'success' => $row ? (int) $row->ok : 0,
+			'success' => $row ? (int) $row->ok + (int) $row->warn : 0,
+			'warn'    => $row ? (int) $row->warn : 0,
 			'error'   => $row ? (int) $row->err : 0,
 			'strings' => $row ? (int) $row->strs : 0,
 		];

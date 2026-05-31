@@ -72,10 +72,11 @@ class Heb_Product_Publisher_Log_Admin {
 			<p class="description">
 				<?php
 				printf(
-					/* translators: 1: total, 2: success, 3: error, 4: translated strings */
-					esc_html__( '总计 %1$d · 成功 %2$d · 失败 %3$d · 累计翻译 %4$d 条字符串', 'heb-product-publisher' ),
+					/* translators: 1: total, 2: success (incl. warn), 3: warn-only count, 4: error, 5: translated strings */
+					esc_html__( '总计 %1$d · 成功 %2$d（含提示 %3$d）· 失败 %4$d · 累计翻译 %5$d 条字符串', 'heb-product-publisher' ),
 					(int) $summary['total'],
 					(int) $summary['success'],
+					(int) ( $summary['warn'] ?? 0 ),
 					(int) $summary['error'],
 					(int) $summary['strings']
 				);
@@ -97,8 +98,9 @@ class Heb_Product_Publisher_Log_Admin {
 				</select>
 				<select name="status">
 					<option value=""><?php esc_html_e( '全部状态', 'heb-product-publisher' ); ?></option>
-					<option value="success" <?php selected( $status, 'success' ); ?>>✅ success</option>
-					<option value="error"   <?php selected( $status, 'error' ); ?>>❌ error</option>
+					<option value="success" <?php selected( $status, 'success' ); ?>>✅ <?php esc_html_e( '成功', 'heb-product-publisher' ); ?></option>
+					<option value="warn" <?php selected( $status, 'warn' ); ?>>⚠️ <?php esc_html_e( '成功（有提示）', 'heb-product-publisher' ); ?></option>
+					<option value="error" <?php selected( $status, 'error' ); ?>>❌ <?php esc_html_e( '失败', 'heb-product-publisher' ); ?></option>
 				</select>
 				<input type="search" name="s" value="<?php echo esc_attr( $search ); ?>" placeholder="<?php esc_attr_e( '搜索标题 / 站点 / 错误消息', 'heb-product-publisher' ); ?>" />
 				<?php submit_button( __( '筛选', 'heb-product-publisher' ), 'secondary', '', false ); ?>
@@ -140,9 +142,13 @@ class Heb_Product_Publisher_Log_Admin {
 								<td><code><?php echo esc_html( $row->target_locale ); ?></code></td>
 								<td>
 									<?php if ( 'success' === $row->status ) : ?>
-										<span style="color:#00a32a;font-weight:600">✅</span>
+										<span style="color:#00a32a;font-weight:600" title="<?php esc_attr_e( '成功', 'heb-product-publisher' ); ?>">✅</span>
+									<?php elseif ( 'warn' === $row->status ) : ?>
+										<span style="color:#b45309;font-weight:600" title="<?php esc_attr_e( '成功，有提示', 'heb-product-publisher' ); ?>">⚠️</span>
+									<?php elseif ( 'skipped_locked' === $row->status ) : ?>
+										<span style="color:#b45309;font-weight:600" title="<?php esc_attr_e( '已锁定，跳过', 'heb-product-publisher' ); ?>">🔒</span>
 									<?php else : ?>
-										<span style="color:#b32d2e;font-weight:600">❌</span>
+										<span style="color:#b32d2e;font-weight:600" title="<?php esc_attr_e( '失败', 'heb-product-publisher' ); ?>">❌</span>
 									<?php endif; ?>
 								</td>
 								<td>
@@ -150,13 +156,16 @@ class Heb_Product_Publisher_Log_Admin {
 								</td>
 								<td><?php echo (int) $row->duration_ms; ?>ms</td>
 								<td>
-									<?php if ( 'success' === $row->status && $row->remote_edit_url ) : ?>
+									<?php if ( Heb_Product_Publisher_Log::is_successful_status( $row->status ) && $row->remote_edit_url ) : ?>
 										<a href="<?php echo esc_url( $row->remote_edit_url ); ?>" target="_blank" rel="noopener">
 											<?php esc_html_e( '在目标站点打开', 'heb-product-publisher' ); ?> → #<?php echo (int) $row->remote_post_id; ?>
 										</a>
 									<?php endif; ?>
-									<?php if ( $row->message ) : ?>
-										<div style="color:#646970;word-break:break-all;max-height:4em;overflow:auto;"><?php echo esc_html( $row->message ); ?></div>
+									<?php
+									$display_msg = Heb_Product_Publisher_Log::format_message( $row->message );
+									if ( $display_msg ) :
+										?>
+										<div style="color:<?php echo 'warn' === $row->status ? '#b45309' : '#646970'; ?>;word-break:break-word;max-height:4em;overflow:auto;"><?php echo esc_html( $display_msg ); ?></div>
 									<?php endif; ?>
 								</td>
 							</tr>

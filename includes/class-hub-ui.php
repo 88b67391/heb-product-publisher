@@ -900,7 +900,7 @@ class Heb_Product_Publisher_Hub_UI {
 			$message = isset( $result['message'] ) ? (string) $result['message'] : 'locked';
 		}
 		if ( $ok && ! empty( $result['warn'] ) && is_array( $result['warn'] ) ) {
-			$message = 'warn: ' . wp_json_encode( array_slice( $result['warn'], 0, 5 ) );
+			$message = implode( ' ', array_map( 'strval', array_slice( $result['warn'], 0, 5 ) ) );
 		}
 		$log_status = 'error';
 		if ( $locked ) {

@@ -91,8 +91,19 @@ class Heb_Product_Publisher_Product_Columns {
 			}
 
 			$status = isset( $d['last_status'] ) ? (string) $d['last_status'] : '';
-			$class  = 'success' === $status ? 'heb-pp-pill--ok' : ( 'error' === $status ? 'heb-pp-pill--err' : 'heb-pp-pill--none' );
-			$icon   = 'success' === $status ? '✓' : ( 'error' === $status ? '✕' : '•' );
+			if ( 'warn' === $status ) {
+				$class = 'heb-pp-pill--warn';
+				$icon  = '⚠';
+			} elseif ( 'success' === $status ) {
+				$class = 'heb-pp-pill--ok';
+				$icon  = '✓';
+			} elseif ( 'error' === $status ) {
+				$class = 'heb-pp-pill--err';
+				$icon  = '✕';
+			} else {
+				$class = 'heb-pp-pill--none';
+				$icon  = '•';
+			}
 			$when   = isset( $d['last_sent_at'] ) ? (int) $d['last_sent_at'] : 0;
 			$when_s = $when ? human_time_diff( $when, time() ) . __( '前', 'heb-product-publisher' ) : '';
 
@@ -140,6 +151,7 @@ class Heb_Product_Publisher_Product_Columns {
 				line-height:1.6; text-decoration:none; border:1px solid transparent;
 			}
 			.heb-pp-pill--ok   { background:#e6f7ea; color:#00692b; border-color:#bfe6c9; }
+			.heb-pp-pill--warn { background:#fff8e6; color:#8a6d00; border-color:#f0d78c; }
 			.heb-pp-pill--err  { background:#fde7e9; color:#9b1c1c; border-color:#f3b9be; }
 			.heb-pp-pill--none { background:#f1f1f1; color:#666;    border-color:#e0e0e0; }
 			.heb-pp-pill:hover { filter:brightness(0.97); }
