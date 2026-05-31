@@ -21,10 +21,10 @@ class Heb_Product_Publisher_Translator {
 	 * 输出超过 60s，触发 cURL error 28。3500 让单批更小，输出更快，超时概率显著下降。
 	 * 可通过 filter `heb_pp_translator_batch_char_limit` 调整。
 	 */
-	const BATCH_CHAR_LIMIT = 3500;
+	const BATCH_CHAR_LIMIT = 2800;
 
 	/** 单条字符串超过该长度将独占一个批次。 */
-	const SOLO_CHAR_LIMIT = 3000;
+	const SOLO_CHAR_LIMIT = 2200;
 
 	/** OpenRouter HTTP 调用超时（秒）。
 	 *
@@ -122,14 +122,14 @@ class Heb_Product_Publisher_Translator {
 		$batch_index    = 0;
 		foreach ( $batches as $batch ) {
 			$batch_index++;
-			$result = $this->call_openrouter_with_retry( $batch, $src_locale, $dst_locale, $api_key, $batch_index );
+			$result = $this->translate_batch_resilient( $batch, $src_locale, $dst_locale, $api_key, $batch_index );
 			if ( is_wp_error( $result ) ) {
 				$errors[] = $result->get_error_message();
 				continue;
 			}
-			foreach ( $batch as $path => $text ) {
-				if ( isset( $result[ $path ] ) && is_string( $result[ $path ] ) && '' !== $result[ $path ] ) {
-					$translated_map[ $path ] = $result[ $path ];
+			foreach ( $result as $path => $text ) {
+				if ( is_string( $path ) && is_string( $text ) && '' !== $text ) {
+					$translated_map[ $path ] = $text;
 				}
 			}
 		}
@@ -167,10 +167,10 @@ class Heb_Product_Publisher_Translator {
 	}
 
 	/** 长 HTML 字符串自动切片阈值（字符数）。超过则按 block 边界拆段独立翻译。 */
-	const HTML_SPLIT_THRESHOLD = 1500;
+	const HTML_SPLIT_THRESHOLD = 1200;
 
 	/** 切片后每段的目标上限。 */
-	const HTML_SEGMENT_TARGET = 2500;
+	const HTML_SEGMENT_TARGET = 1800;
 
 	/** Path 后缀分隔符：segment 化字符串用 "<path>::seg<i>" 形式存。 */
 	const SEGMENT_DELIM = '::seg';
@@ -178,19 +178,15 @@ class Heb_Product_Publisher_Translator {
 	/**
 	 * 是否启用长 HTML 自动切片。
 	 *
-	 * 默认 false：保留完整内容上下文给翻译模型（术语一致性最好），但要求模型
-	 * 足够快（推荐 Gemini 2.5 Flash / GPT-4o-mini / Haiku），否则 long content
-	 * 单批 LLM 输出耗时会撞 HTTP timeout。
+	 * 默认 true：Elementor 长 HTML 整批翻译时模型常返回截断/非 JSON；
+	 * 切片后单批更短，JSON 解析成功率显著更高。
 	 *
-	 * 用快模型时关闭切片 = 整篇一次翻译，保完整度；
-	 * 用慢模型（Claude Sonnet/Opus/GPT-5）时启用切片 = 单批小段不易超时。
-	 *
-	 * 可通过 filter 'heb_pp_translator_enable_html_split' 切换。
+	 * 可通过 filter 'heb_pp_translator_enable_html_split' 关闭（术语一致性更好，但需快模型）。
 	 *
 	 * @return bool
 	 */
 	public static function html_split_enabled() {
-		return (bool) apply_filters( 'heb_pp_translator_enable_html_split', false );
+		return (bool) apply_filters( 'heb_pp_translator_enable_html_split', true );
 	}
 
 	/**
@@ -514,6 +510,95 @@ class Heb_Product_Publisher_Translator {
 	}
 
 	/**
+	 * 翻译单批；JSON 解析失败时自动拆成更小批次或 HTML 切片重试。
+	 *
+	 * @param array<string,string> $batch       path=>text。
+	 * @param string               $src         源语言。
+	 * @param string               $dst         目标语言。
+	 * @param string               $api_key     API key.
+	 * @param int                  $batch_index 批次序号（日志用）。
+	 * @return array<string,string>|\WP_Error
+	 */
+	private function translate_batch_resilient( array $batch, $src, $dst, $api_key, $batch_index ) {
+		if ( empty( $batch ) ) {
+			return [];
+		}
+
+		$result = $this->call_openrouter_with_retry( $batch, $src, $dst, $api_key, $batch_index );
+		if ( ! is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		if ( ! $this->is_json_parse_error( $result ) ) {
+			return $result;
+		}
+
+		// 单条长 HTML：按 block 边界切片后逐段翻译。
+		if ( 1 === count( $batch ) ) {
+			$path = (string) array_key_first( $batch );
+			$text = (string) $batch[ $path ];
+			if ( strlen( $text ) >= self::HTML_SPLIT_THRESHOLD ) {
+				$segments = $this->maybe_split_html( $text );
+				if ( count( $segments ) > 1 ) {
+					$merged  = [];
+					$seg_idx = 0;
+					foreach ( $segments as $i => $seg ) {
+						++$seg_idx;
+						$seg_path = $path . self::SEGMENT_DELIM . $i;
+						$seg_res  = $this->call_openrouter_with_retry(
+							[ $seg_path => (string) $seg ],
+							$src,
+							$dst,
+							$api_key,
+							$batch_index * 100 + $seg_idx
+						);
+						if ( is_wp_error( $seg_res ) ) {
+							return $result;
+						}
+						$merged = array_merge( $merged, $seg_res );
+					}
+					return $merged;
+				}
+			}
+			return $result;
+		}
+
+		// 多 key 批次：对半拆开后分别翻译。
+		$chunk_size = (int) max( 1, ceil( count( $batch ) / 2 ) );
+		$parts      = array_chunk( $batch, $chunk_size, true );
+		if ( count( $parts ) < 2 ) {
+			return $result;
+		}
+
+		$merged = [];
+		$part_i = 0;
+		foreach ( $parts as $part ) {
+			++$part_i;
+			if ( empty( $part ) ) {
+				continue;
+			}
+			$sub = $this->translate_batch_resilient( $part, $src, $dst, $api_key, $batch_index * 10 + $part_i );
+			if ( is_wp_error( $sub ) ) {
+				return $result;
+			}
+			$merged = array_merge( $merged, $sub );
+		}
+		return $merged;
+	}
+
+	/**
+	 * @param \WP_Error $err Error.
+	 * @return bool
+	 */
+	private function is_json_parse_error( \WP_Error $err ) {
+		$code = (string) $err->get_error_code();
+		if ( in_array( $code, [ 'heb_pp_openrouter_parse', 'heb_pp_openrouter_shape' ], true ) ) {
+			return true;
+		}
+		return false !== stripos( (string) $err->get_error_message(), 'JSON' );
+	}
+
+	/**
 	 * 带指数退避重试的 OpenRouter 调用。仅对网络/HTTP 5xx/超时错误重试，
 	 * 对 4xx（API key 错、模型不存在）不重试避免无意义阻塞。
 	 *
@@ -614,8 +699,8 @@ class Heb_Product_Publisher_Translator {
 		//   - ÷3：英文 1 token ≈ 3-4 chars；中文/日文 1 token ≈ 1.5-2 chars
 		//   下限 1024（短 batch 避免输出被截断），上限 16384（避免再次撞预算）。
 		$user_len   = strlen( (string) $user );
-		$est_output = (int) ceil( $user_len * 1.6 / 3 );
-		$max_tokens = max( 1024, min( 16384, $est_output ) );
+		$est_output = (int) ceil( $user_len * 2.2 / 3 );
+		$max_tokens = max( 2048, min( 32768, $est_output ) );
 		$max_tokens = (int) apply_filters( 'heb_pp_translator_max_tokens', $max_tokens, $user_len );
 
 		$body = [
@@ -699,6 +784,23 @@ class Heb_Product_Publisher_Translator {
 		$direct = json_decode( $raw, true );
 		if ( is_array( $direct ) ) {
 			return $direct;
+		}
+		// ```json ... ``` 代码块（含未闭合 fence 的截断输出）。
+		if ( preg_match( '/```(?:json)?\s*(\{[\s\S]*)/i', $raw, $fence ) ) {
+			$inner = trim( (string) $fence[1] );
+			$inner = preg_replace( '/\s*```$/', '', $inner );
+			$try   = json_decode( (string) $inner, true );
+			if ( is_array( $try ) ) {
+				return $try;
+			}
+			$start = strpos( $inner, '{' );
+			$end   = strrpos( $inner, '}' );
+			if ( false !== $start && false !== $end && $end > $start ) {
+				$try = json_decode( substr( $inner, $start, $end - $start + 1 ), true );
+				if ( is_array( $try ) ) {
+					return $try;
+				}
+			}
 		}
 		$stripped = preg_replace( '/^```(?:json)?\s*/i', '', $raw );
 		$stripped = preg_replace( '/\s*```$/', '', (string) $stripped );
