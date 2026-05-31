@@ -430,6 +430,20 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		$remain  = (int) ( $activity['stage_remaining'] ?? 0 );
 
 		if ( $stalled ) {
+			$cur = isset( $rec['current_item'] ) && is_array( $rec['current_item'] ) ? $rec['current_item'] : null;
+			if ( $cur && ! empty( $cur['source_id'] ) ) {
+				Heb_Product_Publisher_Bootstrap_Status::add_log(
+					$job_id,
+					'warning',
+					sprintf(
+						/* translators: 1: type, 2: id */
+						__( '检测到孤儿任务 %1$s #%2$d（AS 已空但未写入进度），将清除并补排…', 'heb-product-publisher' ),
+						(string) ( $cur['type'] ?? 'item' ),
+						(int) $cur['source_id']
+					)
+				);
+				Heb_Product_Publisher_Bootstrap_Status::clear_current_item( $job_id );
+			}
 			Heb_Product_Publisher_Bootstrap_Status::add_log(
 				$job_id,
 				'warning',

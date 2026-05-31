@@ -343,12 +343,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 
 		$rescued = 0;
 		if ( Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS === $stage ) {
-			$expected  = self::collect_distributable_post_ids();
-			$as_ids    = self::get_job_object_ids_from_as( $job_id, self::HOOK_POST, 'post_id' );
-			$log_ids   = self::get_accounted_ids_from_log( $rec, 'post' );
-			$error_ids = self::get_error_source_ids( $rec, 'post' );
-			$accounted = array_unique( array_merge( $as_ids, $log_ids, $error_ids ) );
-			$missing   = array_values( array_diff( $expected, $accounted ) );
+			$missing = self::find_missing_stage_objects( $rec, $job_id, self::HOOK_POST, 'post', 'post_id', self::collect_distributable_post_ids(), $remaining );
 			foreach ( $missing as $post_id ) {
 				self::schedule_bootstrap_action(
 					self::HOOK_POST,
@@ -372,12 +367,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 				);
 			}
 		} elseif ( Heb_Product_Publisher_Bootstrap_Status::STAGE_TERMS === $stage ) {
-			$expected  = self::collect_distributable_term_ids();
-			$as_ids    = self::get_job_object_ids_from_as( $job_id, self::HOOK_TERM, 'term_id' );
-			$log_ids   = self::get_accounted_ids_from_log( $rec, 'term' );
-			$error_ids = self::get_error_source_ids( $rec, 'term' );
-			$accounted = array_unique( array_merge( $as_ids, $log_ids, $error_ids ) );
-			$missing   = array_values( array_diff( $expected, $accounted ) );
+			$missing = self::find_missing_stage_objects( $rec, $job_id, self::HOOK_TERM, 'term', 'term_id', self::collect_distributable_term_ids(), $remaining );
 			foreach ( $missing as $term_id ) {
 				self::schedule_bootstrap_action(
 					self::HOOK_TERM,
@@ -402,7 +392,52 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			}
 		}
 
+		if ( $rescued > 0 ) {
+			Heb_Product_Publisher_Bootstrap_Status::clear_current_item( $job_id );
+		}
+
 		return $rescued;
+	}
+
+	/**
+	 * 找出本阶段仍应处理、但 Bootstrap 计数未完结且 AS 无在途任务的对象 ID。
+	 *
+	 * @param array<string,mixed> $rec       Job record.
+	 * @param string              $job_id    Job id.
+	 * @param string              $hook      AS hook.
+	 * @param string              $type      Object type label (post/term).
+	 * @param string              $id_field  Payload id key.
+	 * @param array<int,int>      $expected  Expected object ids.
+	 * @param int                 $remaining Remaining count for this stage.
+	 * @return array<int,int>
+	 */
+	private static function find_missing_stage_objects( array $rec, $job_id, $hook, $type, $id_field, array $expected, $remaining ) {
+		$finished  = array_unique(
+			array_merge(
+				self::get_accounted_ids_from_log( $rec, $type ),
+				self::get_error_source_ids( $rec, $type )
+			)
+		);
+		$inflight  = self::get_job_inflight_object_ids( $job_id, $hook, $id_field );
+		$orphans   = self::get_orphan_ids_from_log( $rec, $type );
+		$candidates = array_values(
+			array_unique(
+				array_merge(
+					$orphans,
+					array_diff( $expected, $finished, $inflight )
+				)
+			)
+		);
+		if ( $remaining > 0 && count( $candidates ) > $remaining ) {
+			// 优先补排「已开始但未完结」的孤儿任务。
+			$orphans_in_candidates = array_values( array_intersect( $orphans, $candidates ) );
+			$rest                  = array_values( array_diff( $candidates, $orphans_in_candidates ) );
+			$candidates            = array_merge(
+				$orphans_in_candidates,
+				array_slice( $rest, 0, max( 0, $remaining - count( $orphans_in_candidates ) ) )
+			);
+		}
+		return $candidates;
 	}
 
 	/**
@@ -454,18 +489,39 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 	 * @param string $id_field Payload id key.
 	 * @return array<int,int>
 	 */
-	private static function get_job_object_ids_from_as( $job_id, $hook, $id_field ) {
+	private static function get_job_inflight_object_ids( $job_id, $hook, $id_field ) {
+		return self::get_job_object_ids_from_as(
+			$job_id,
+			$hook,
+			$id_field,
+			[
+				\ActionScheduler_Store::STATUS_PENDING,
+				\ActionScheduler_Store::STATUS_RUNNING,
+			]
+		);
+	}
+
+	/**
+	 * @param string $job_id   Job id.
+	 * @param string $hook     AS hook.
+	 * @param string $id_field Payload id key.
+	 * @param array<int,string> $statuses AS statuses to include.
+	 * @return array<int,int>
+	 */
+	private static function get_job_object_ids_from_as( $job_id, $hook, $id_field, array $statuses = [] ) {
 		$ids = [];
 		if ( ! function_exists( 'as_get_scheduled_actions' ) ) {
 			return $ids;
 		}
-		$statuses = [
-			\ActionScheduler_Store::STATUS_PENDING,
-			\ActionScheduler_Store::STATUS_RUNNING,
-			\ActionScheduler_Store::STATUS_FAILED,
-			\ActionScheduler_Store::STATUS_COMPLETE,
-			\ActionScheduler_Store::STATUS_CANCELED,
-		];
+		if ( empty( $statuses ) ) {
+			$statuses = [
+				\ActionScheduler_Store::STATUS_PENDING,
+				\ActionScheduler_Store::STATUS_RUNNING,
+				\ActionScheduler_Store::STATUS_FAILED,
+				\ActionScheduler_Store::STATUS_COMPLETE,
+				\ActionScheduler_Store::STATUS_CANCELED,
+			];
+		}
 		foreach ( $statuses as $as_status ) {
 			$actions = as_get_scheduled_actions(
 				[
@@ -495,6 +551,32 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			}
 		}
 		return array_values( array_unique( $ids ) );
+	}
+
+	/**
+	 * 日志里「已开始但未完成/失败/跳过」的对象（AS 已结束但 Bootstrap 计数未更新）。
+	 *
+	 * @param array<string,mixed> $rec  Job record.
+	 * @param string              $type Object type.
+	 * @return array<int,int>
+	 */
+	private static function get_orphan_ids_from_log( array $rec, $type ) {
+		$started  = [];
+		$finished = [];
+		$type_re  = preg_quote( (string) $type, '/' );
+		foreach ( $rec['log'] ?? [] as $entry ) {
+			$msg = isset( $entry['msg'] ) ? (string) $entry['msg'] : '';
+			if ( '' === $msg ) {
+				continue;
+			}
+			if ( preg_match( '/^' . $type_re . ' #(\d+).*开始/u', $msg, $m ) ) {
+				$started[] = (int) $m[1];
+			}
+			if ( preg_match( '/^' . $type_re . ' #(\d+).*(?:完成|失败|跳过)/u', $msg, $m ) ) {
+				$finished[] = (int) $m[1];
+			}
+		}
+		return array_values( array_diff( array_unique( $started ), array_unique( $finished ) ) );
 	}
 
 	/**
