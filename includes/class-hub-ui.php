@@ -761,6 +761,19 @@ class Heb_Product_Publisher_Hub_UI {
 			$translate_stats  = isset( $tr['stats'] ) ? $tr['stats'] : [];
 		}
 
+		$strict_abort = Heb_Product_Publisher_Translator::strict_abort_reason( $translate_errors );
+		if ( null !== $strict_abort ) {
+			$r = [
+				'ok'        => false,
+				'message'   => $strict_abort,
+				'translate' => $translate_stats,
+				'warn'      => $translate_errors,
+				'locale'    => $target_locale,
+			];
+			$this->record_distribution( $post_id, $site, $target_locale, $r, $translate_stats, (int) round( ( microtime( true ) - $started ) * 1000 ), $basepayload );
+			return $r;
+		}
+
 		$import_timeout = Heb_Product_Publisher_Admin_Settings::site_timeout( $site );
 		$push           = Heb_Product_Publisher_Remote_Client::post( $site, '/import-product', $payload, $import_timeout );
 		if ( is_wp_error( $push ) ) {

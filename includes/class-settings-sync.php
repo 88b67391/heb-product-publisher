@@ -273,6 +273,18 @@ class Heb_Product_Publisher_Settings_Sync {
 		$payload    = $translated['payload'];
 		$errors     = $translated['errors'];
 
+		$strict_abort = Heb_Product_Publisher_Translator::strict_abort_reason( $errors );
+		if ( null !== $strict_abort ) {
+			return [
+				'ok'          => false,
+				'message'     => $strict_abort,
+				'site_id'     => $sid,
+				'site_label'  => $label,
+				'errors'      => $errors,
+				'duration_ms' => (int) round( ( microtime( true ) - $started ) * 1000 ),
+			];
+		}
+
 		$timeout = Heb_Product_Publisher_Admin_Settings::site_timeout( $site );
 		$res     = Heb_Product_Publisher_Remote_Client::post( $site, '/import-settings', $payload, $timeout );
 

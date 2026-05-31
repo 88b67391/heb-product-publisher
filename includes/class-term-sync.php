@@ -213,6 +213,18 @@ class Heb_Product_Publisher_Term_Sync {
 		$payload    = $translated['payload'];
 		$errors     = $translated['errors'];
 
+		$strict_abort = Heb_Product_Publisher_Translator::strict_abort_reason( $errors );
+		if ( null !== $strict_abort ) {
+			return [
+				'ok'          => false,
+				'message'     => $strict_abort,
+				'site_id'     => $sid,
+				'site_label'  => $label,
+				'errors'      => $errors,
+				'duration_ms' => (int) round( ( microtime( true ) - $started ) * 1000 ),
+			];
+		}
+
 		// 2) 推送 lang_map（含已知的源站和其他站点 URL）。
 		$payload['lang_map'] = $this->collect_term_lang_map( $term_id, $basepayload );
 

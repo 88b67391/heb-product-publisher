@@ -202,6 +202,17 @@ class Heb_Product_Publisher_Menu_Sync {
 		$payload    = $translated['payload'];
 		$errors     = $translated['errors'];
 
+		$strict_abort = Heb_Product_Publisher_Translator::strict_abort_reason( $errors );
+		if ( null !== $strict_abort ) {
+			return [
+				'ok'          => false,
+				'message'     => $strict_abort,
+				'site_id'     => $sid,
+				'site_label'  => $label,
+				'duration_ms' => (int) round( ( microtime( true ) - $started ) * 1000 ),
+			];
+		}
+
 		$payload['target_url_host']      = wp_parse_url( $site['url'], PHP_URL_HOST );
 		$payload['bind_theme_locations'] = (bool) $bind_theme_locations;
 

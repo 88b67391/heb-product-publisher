@@ -36,6 +36,16 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		add_action( Heb_Product_Publisher_Bootstrap_Queue::HOOK_FINALIZE, [ $this, 'handle_finalize' ], 10, 1 );
 	}
 
+	/** @var bool Bootstrap 队列 item 执行中（用于翻译 strict 模式）。 */
+	private static $in_bootstrap_item = false;
+
+	/**
+	 * @return bool
+	 */
+	public static function in_bootstrap_item() {
+		return self::$in_bootstrap_item;
+	}
+
 	/**
 	 * @param array<string,mixed> $args Args (job_id).
 	 * @return void
@@ -119,6 +129,7 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			return;
 		}
 		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_TERMS;
+		self::$in_bootstrap_item = true;
 		try {
 			$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
 			$site = Heb_Product_Publisher_Admin_Settings::get_site( (string) $rec['site_id'] );
@@ -144,6 +155,8 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		} catch ( \Throwable $e ) {
 			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 			Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'term', $term_id, $e->getMessage() );
+		} finally {
+			self::$in_bootstrap_item = false;
 		}
 		$this->maybe_advance_stage( $job_id );
 	}
@@ -160,6 +173,7 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			return;
 		}
 		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS;
+		self::$in_bootstrap_item = true;
 		try {
 			$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
 			$site = Heb_Product_Publisher_Admin_Settings::get_site( (string) $rec['site_id'] );
@@ -187,6 +201,8 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		} catch ( \Throwable $e ) {
 			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 			Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'post', $post_id, $e->getMessage() );
+		} finally {
+			self::$in_bootstrap_item = false;
 		}
 		$this->maybe_advance_stage( $job_id );
 	}
@@ -203,6 +219,7 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			return;
 		}
 		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_MENUS;
+		self::$in_bootstrap_item = true;
 		try {
 			$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
 			$site = Heb_Product_Publisher_Admin_Settings::get_site( (string) $rec['site_id'] );
@@ -234,6 +251,8 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		} catch ( \Throwable $e ) {
 			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 			Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'menu', $menu_id, $e->getMessage() );
+		} finally {
+			self::$in_bootstrap_item = false;
 		}
 		$this->maybe_advance_stage( $job_id );
 	}
@@ -249,6 +268,7 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			return;
 		}
 		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_SETTINGS;
+		self::$in_bootstrap_item = true;
 		try {
 			$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
 			$site = Heb_Product_Publisher_Admin_Settings::get_site( (string) $rec['site_id'] );
@@ -277,6 +297,8 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		} catch ( \Throwable $e ) {
 			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 			Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'settings', 0, $e->getMessage() );
+		} finally {
+			self::$in_bootstrap_item = false;
 		}
 		$this->maybe_advance_stage( $job_id );
 	}

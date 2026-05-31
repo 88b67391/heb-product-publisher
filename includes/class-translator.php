@@ -176,17 +176,47 @@ class Heb_Product_Publisher_Translator {
 	const SEGMENT_DELIM = '::seg';
 
 	/**
-	 * 是否启用长 HTML 自动切片。
+	 * Bootstrap 队列内默认 strict：任一批次翻译失败则不写入子站，避免源语言残留。
+	 * 手动 Dashboard 分发仍允许 warn + 源文兜底（filter 可改）。
 	 *
-	 * 默认 true：Elementor 长 HTML 整批翻译时模型常返回截断/非 JSON；
-	 * 切片后单批更短，JSON 解析成功率显著更高。
+	 * @return bool
+	 */
+	public static function strict_mode() {
+		if ( class_exists( 'Heb_Product_Publisher_Bootstrap_Worker', false )
+			&& Heb_Product_Publisher_Bootstrap_Worker::in_bootstrap_item() ) {
+			return true;
+		}
+		return (bool) apply_filters( 'heb_pp_translator_strict', false );
+	}
+
+	/**
+	 * strict 模式下，翻译有错则中止远端写入。
 	 *
-	 * 可通过 filter 'heb_pp_translator_enable_html_split' 关闭（术语一致性更好，但需快模型）。
+	 * @param array<int,string> $errors 翻译错误列表。
+	 * @return string|null 应中止时返回用户可读原因，否则 null。
+	 */
+	public static function strict_abort_reason( array $errors ) {
+		if ( ! self::strict_mode() || empty( $errors ) ) {
+			return null;
+		}
+		$preview = implode( ' | ', array_slice( array_map( 'strval', $errors ), 0, 2 ) );
+		return sprintf(
+			/* translators: %s: first translation errors */
+			__( '翻译未完整完成，已拒绝写入子站（避免源语言残留）：%s', 'heb-product-publisher' ),
+			$preview
+		);
+	}
+
+	/**
+	 * 高质量慢模型（Opus/Sonnet/GPT-4 等）默认不预切片，保留整段上下文；
+	 * Flash/Haiku 等快模型默认切片，降低 JSON 截断概率。
 	 *
 	 * @return bool
 	 */
 	public static function html_split_enabled() {
-		return (bool) apply_filters( 'heb_pp_translator_enable_html_split', true );
+		$model   = strtolower( (string) Heb_Product_Publisher_Admin_Settings::openrouter_model() );
+		$default = ! preg_match( '/opus|sonnet|gpt-4|gpt-5|o1|o3|gemini.*pro|deepseek.*reason/i', $model );
+		return (bool) apply_filters( 'heb_pp_translator_enable_html_split', $default );
 	}
 
 	/**
