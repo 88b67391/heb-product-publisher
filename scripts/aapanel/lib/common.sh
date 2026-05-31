@@ -252,33 +252,46 @@ activate_site_stack() {
 # prep 误删 ACF 结构后，从主站重新导入 CPT/字段组定义
 repair_structural_config() {
 	local target="$1"
-	local main_path tmpdir wxr
+	local main_path bundle copy_script n_pt n_fg n_tx result
 	main_path="$(ensure_main_site)"
-	tmpdir="$(mktemp -d)"
+	copy_script="$SCRIPT_DIR/copy-acf-structure.php"
+	[[ -f "$copy_script" ]] || die "缺少 $copy_script"
 
 	info "激活与主站一致的插件/主题…"
 	activate_site_stack "$target"
 
-	info "从主站导出 ACF 结构（acf-post-type / acf-field-group / acf-taxonomy）…"
-	wp_run "$main_path" export \
-		--dir="$tmpdir" \
-		--post_type=acf-post-type,acf-field-group,acf-taxonomy \
-		--skip_comments --skip_themes --skip_plugins 2>/dev/null || true
+	n_pt="$(wp_run "$main_path" post list --post_type=acf-post-type --post_status=any --format=count 2>/dev/null || echo 0)"
+	n_fg="$(wp_run "$main_path" post list --post_type=acf-field-group --post_status=any --format=count 2>/dev/null || echo 0)"
+	n_tx="$(wp_run "$main_path" post list --post_type=acf-taxonomy --post_status=any --format=count 2>/dev/null || echo 0)"
+	info "主站 ACF 结构：post-type=${n_pt} field-group=${n_fg} taxonomy=${n_tx}"
+	if [[ "${n_pt:-0}" -eq 0 && "${n_fg:-0}" -eq 0 && "${n_tx:-0}" -eq 0 ]]; then
+		die "主站未找到 ACF 结构 post。请确认 ACF Pro 已激活，且 Post Types / Field Groups 在后台可见。"
+	fi
 
-	wxr="$(find "$tmpdir" -maxdepth 1 -name '*.xml' -print -quit 2>/dev/null || true)"
-	rm -rf "$tmpdir"
-	if [[ -z "$wxr" || ! -f "$wxr" ]]; then
-		die "无法从主站导出 ACF 结构。请确认主站已激活 ACF，且 products CPT 在 ACF 中已注册。"
+	bundle="$(mktemp)"
+	info "从主站导出 ACF 结构…"
+	if ! wp_run "$main_path" eval-file "$copy_script" export >"$bundle" 2>/dev/null; then
+		rm -f "$bundle"
+		die "导出失败。请确认主站 WP-CLI 可正常运行。"
+	fi
+	if [[ ! -s "$bundle" ]] || [[ "$(tr -d '[:space:]' <"$bundle")" == "[]" ]]; then
+		rm -f "$bundle"
+		die "导出结果为空。请检查主站 ACF 插件是否激活。"
 	fi
 
 	info "导入结构配置到 $(basename "$target") …"
-	wp_run "$target" import "$wxr" --authors=skip 2>/dev/null || true
+	result="$(wp_run "$target" eval-file "$copy_script" import <"$bundle" 2>/dev/null || true)"
+	rm -f "$bundle"
+	if [[ -n "$result" ]]; then
+		info "导入结果：$result"
+	fi
+
 	wp_run "$target" rewrite flush 2>/dev/null || true
 
 	if wp_run "$target" post-type list --field=name 2>/dev/null | grep -qx 'products'; then
 		info "✓ products post type 已恢复"
 	else
-		warn "products 仍未注册，请对比主站与子站的插件/主题是否一致"
+		warn "products 仍未注册，请确认子站 ACF Pro 已激活且 import 无报错"
 		return 1
 	fi
 	return 0
