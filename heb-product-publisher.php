@@ -3,7 +3,7 @@
  * Plugin Name:       HEB Product Publisher
  * Plugin URI:        https://github.com/88b67391/heb-product-publisher
  * Description:       一体化产品分发插件：Hub/Receiver 双角色，OpenRouter 翻译，GitHub Releases 自动升级。3.0 完整功能集 + v3.1 Elementor 图片异步 sideload + v3.1.0-alpha.7 设置页加翻译模型快捷选择按钮（推荐 Gemini Flash / GPT-4o-mini / Claude Haiku / DeepSeek / Gemini Pro / Claude Sonnet），点一下自动填入，不用再手敲模型 ID。
- * Version:           3.2.0-beta.2
+ * Version:           3.3.0-beta.1
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            HEB
@@ -83,7 +83,10 @@ register_activation_hook(
  * @return array<int,string>
  */
 function heb_pp_distributable_post_types() {
-	$raw = (array) apply_filters( 'heb_pp_distributable_post_types', [ 'products', 'solutions', 'page' ] );
+	$raw = (array) apply_filters(
+		'heb_pp_distributable_post_types',
+		[ 'products', 'solutions', 'page', 'elementor_library' ]
+	);
 	$out = [];
 	foreach ( $raw as $pt ) {
 		if ( ! is_string( $pt ) ) {

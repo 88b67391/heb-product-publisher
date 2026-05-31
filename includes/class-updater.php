@@ -46,6 +46,17 @@ class Heb_Product_Publisher_Updater {
 		add_filter( 'plugins_api', [ $this, 'plugins_api' ], 10, 3 );
 		add_filter( 'upgrader_source_selection', [ $this, 'fix_folder_name' ], 10, 4 );
 		add_filter( 'upgrader_pre_download', [ $this, 'authenticate_download' ], 10, 3 );
+		add_action( 'load-plugins.php', [ $this, 'maybe_force_check' ] );
+		add_action( 'load-update-core.php', [ $this, 'maybe_force_check' ] );
+	}
+
+	/**
+	 * 打开插件/更新页时清缓存，避免 12h 内看不到新 Release。
+	 *
+	 * @return void
+	 */
+	public function maybe_force_check() {
+		delete_transient( self::TRANSIENT_KEY );
 	}
 
 	/**

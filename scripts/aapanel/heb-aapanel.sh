@@ -32,6 +32,12 @@ HEB × aaPanel 开站工具
   批量（ar/fr/ja/ko/ru/vi）：
   sudo bash scripts/aapanel/heb-aapanel.sh prep-all --yes
 
+  诊断各语言站 WordPress 是否就绪：
+  sudo bash scripts/aapanel/heb-aapanel.sh check
+
+  prep 后同步管理员密码（需在 heb-aapanel.env 设置 WP_ADMIN_PASS）：
+  sudo bash scripts/aapanel/heb-aapanel.sh prep --domain ja.hongbotex.com --locale ja_JP --sync-admin --yes
+
 【依赖】服务器需安装 WP-CLI：
   curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
   chmod +x wp-cli.phar && mv wp-cli.phar /usr/local/bin/wp
@@ -45,6 +51,21 @@ EOF
 		exec bash "$SCRIPT_DIR/heb-prep-cloned-site.sh" "$@" ;;
 	prep-all)
 		exec bash "$SCRIPT_DIR/heb-prep-cloned-site.sh" prep-all "$@" ;;
+	check)
+		load_env() { source "${HEB_AAPANEL_ENV:-$SCRIPT_DIR/heb-aapanel.env}" 2>/dev/null || source "$SCRIPT_DIR/heb-aapanel.env.example"; }
+		# shellcheck source=lib/common.sh
+		source "$SCRIPT_DIR/lib/common.sh"
+		load_env
+		echo "主站:"
+		diagnose_wp_root "$(site_path "$MAIN_DOMAIN")" || true
+		echo ""
+		for entry in "${LANG_SITES[@]}"; do
+			d="${entry%%:*}"
+			echo "--- $d ---"
+			diagnose_wp_root "$(site_path "$d")" || true
+			echo ""
+		done
+		;;
 	*)
 		echo "未知命令: $cmd（用 help 查看）" >&2
 		exit 1

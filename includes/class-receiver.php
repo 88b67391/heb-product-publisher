@@ -583,6 +583,64 @@ class Heb_Product_Publisher_Receiver {
 			flush_rewrite_rules( false );
 		}
 
+		// Elementor 全局 options。
+		foreach ( (array) ( $body['elementor'] ?? [] ) as $opt => $val ) {
+			$opt = sanitize_key( (string) $opt );
+			if ( ! in_array( $opt, Heb_Product_Publisher_Settings_Sync::elementor_options(), true ) ) {
+				$skipped[] = 'elementor:' . $opt . ' (not whitelisted)';
+				continue;
+			}
+			if ( ! $this->is_safe_elementor_option_value( $opt, $val ) ) {
+				$skipped[] = 'elementor:' . $opt . ' (invalid value type)';
+				continue;
+			}
+			update_option( $opt, $val );
+			$applied[] = 'elementor:' . $opt;
+		}
+
+		// Yoast 全局 options（整包数组复制）。
+		foreach ( (array) ( $body['yoast'] ?? [] ) as $opt => $val ) {
+			$opt = sanitize_key( (string) $opt );
+			if ( ! in_array( $opt, Heb_Product_Publisher_Settings_Sync::yoast_options(), true ) ) {
+				$skipped[] = 'yoast:' . $opt . ' (not whitelisted)';
+				continue;
+			}
+			if ( ! is_array( $val ) ) {
+				$skipped[] = 'yoast:' . $opt . ' (expected array)';
+				continue;
+			}
+			update_option( $opt, $val );
+			$applied[] = 'yoast:' . $opt;
+		}
+
+		// theme_mod（Customizer 存于 theme_mods_{stylesheet}）。
+		if ( ! empty( $body['theme_mods'] ) && is_array( $body['theme_mods'] ) ) {
+			$exclude = array_flip( Heb_Product_Publisher_Settings_Sync::theme_mod_exclude_keys() );
+			$mod_n   = 0;
+			foreach ( $body['theme_mods'] as $mod_key => $mod_val ) {
+				if ( ! is_string( $mod_key ) || '' === $mod_key || isset( $exclude[ $mod_key ] ) ) {
+					continue;
+				}
+				set_theme_mod( $mod_key, $mod_val );
+				++$mod_n;
+			}
+			if ( $mod_n > 0 ) {
+				$applied[] = 'theme_mods:' . $mod_n;
+			}
+		}
+
+		// Elementor Kit 变更后清 CSS 缓存。
+		if ( class_exists( '\\Elementor\\Plugin' ) ) {
+			try {
+				$plugin = \Elementor\Plugin::$instance;
+				if ( $plugin && isset( $plugin->files_manager ) && method_exists( $plugin->files_manager, 'clear_cache' ) ) {
+					$plugin->files_manager->clear_cache();
+				}
+			} catch ( \Throwable $e ) {
+				unset( $e );
+			}
+		}
+
 		return rest_ensure_response(
 			[
 				'success'         => true,
@@ -1075,6 +1133,34 @@ class Heb_Product_Publisher_Receiver {
 			return is_scalar( $val ) ? sanitize_text_field( (string) $val ) : null;
 		}
 		return is_scalar( $val ) ? $val : null;
+	}
+
+	/**
+	 * Elementor option 值类型校验。
+	 *
+	 * @param string $opt Option name.
+	 * @param mixed  $val Value.
+	 * @return bool
+	 */
+	private function is_safe_elementor_option_value( $opt, $val ) {
+		if ( 'elementor_cpt_support' === $opt ) {
+			if ( ! is_array( $val ) ) {
+				return false;
+			}
+			foreach ( $val as $item ) {
+				if ( ! is_string( $item ) || '' === sanitize_key( $item ) ) {
+					return false;
+				}
+			}
+			return true;
+		}
+		if ( in_array( $opt, [ 'elementor_container_width', 'elementor_viewport_lg', 'elementor_viewport_md', 'elementor_viewport_sm' ], true ) ) {
+			return is_numeric( $val );
+		}
+		if ( in_array( $opt, [ 'elementor_disable_color_schemes', 'elementor_disable_typography_schemes', 'elementor_global_image_lightbox' ], true ) ) {
+			return is_scalar( $val );
+		}
+		return is_scalar( $val ) || is_array( $val );
 	}
 
 	/**

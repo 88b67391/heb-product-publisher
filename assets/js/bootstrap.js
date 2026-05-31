@@ -48,6 +48,35 @@
 			});
 		}
 
+		function resendScope(scope) {
+			var siteId = $('#heb-pp-bs-site').val();
+			if (!siteId) {
+				window.alert(HebPPBootstrap.i18n.selectSite);
+				return;
+			}
+			var msg = scope === 'settings' ? HebPPBootstrap.i18n.confirmResendSettings : HebPPBootstrap.i18n.confirmResendMenus;
+			if (!window.confirm(msg)) {
+				return;
+			}
+			$startMsg.text(HebPPBootstrap.i18n.starting);
+			$.post(HebPPBootstrap.ajaxUrl, {
+				action: 'heb_pp_bs_resend',
+				nonce: HebPPBootstrap.nonce,
+				site_id: siteId,
+				scope: scope,
+				scope_menu_locations: $('#heb-pp-bs-scope-menu-locations').is(':checked') ? 1 : 0
+			}).done(function (res) {
+				if (res && res.success) {
+					$startMsg.html('<span style="color:#080;">Job: <code>' + res.data.job_id.substring(0, 8) + '</code></span>');
+					setTimeout(function () { window.location.reload(); }, 1200);
+				} else {
+					$startMsg.html('<span style="color:#a00;">' + ((res && res.data && res.data.message) || 'Error') + '</span>');
+				}
+			}).fail(function (xhr) {
+				$startMsg.html('<span style="color:#a00;">' + (xhr.statusText || 'Error') + '</span>');
+			});
+		}
+
 		function cancelJob(jobId) {
 			if (!window.confirm(HebPPBootstrap.i18n.confirmCancel)) {
 				return;
@@ -158,6 +187,19 @@
 					});
 					html += '</ul>';
 				}
+
+				if (job.audit && job.audit.checks && job.audit.checks.length) {
+					html += '<h4 style="margin-top:14px;">配置验收</h4>';
+					html += '<table class="widefat" style="max-width:700px;"><thead><tr><th>检查项</th><th>结果</th><th>说明</th></tr></thead><tbody>';
+					job.audit.checks.forEach(function (c) {
+						var ok = c.ok ? '✓' : '✗';
+						var color = c.ok ? '#080' : '#a00';
+						html += '<tr><td><code>' + escapeHtml(c.id || '') + '</code></td>';
+						html += '<td style="color:' + color + ';">' + ok + '</td>';
+						html += '<td>' + escapeHtml(c.message || '') + '</td></tr>';
+					});
+					html += '</tbody></table>';
+				}
 				$detailsBody.html(html);
 
 				var finished = (job.status === 'done' || job.status === 'done_with_errors' || job.status === 'failed' || job.status === 'cancelled');
@@ -177,6 +219,8 @@
 		}
 
 		$startBtn.on('click', startBootstrap);
+		$('#heb-pp-bs-resend-settings').on('click', function () { resendScope('settings'); });
+		$('#heb-pp-bs-resend-menus').on('click', function () { resendScope('menus'); });
 		$jobs.on('click', '.heb-pp-bs-cancel', function () {
 			cancelJob($(this).data('job-id'));
 		});

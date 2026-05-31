@@ -5,8 +5,8 @@
  * 白名单刻意保守：只同步主站和子站"应该一致"的字段，避免误覆盖子站自己定的（admin_email、
  * siteurl/home、comment_*）。
  *
- * Page references（page_on_front / page_for_posts）转成 { __heb_post_ref: source_id }
- * token，由 Receiver 在写入前反查本地 post id；找不到则跳过该 option。
+ * Page references（page_on_front / page_for_posts / elementor_active_kit）转成
+ * { source_post_id } token，由 Receiver 在写入前反查本地 post id；找不到则跳过该 option。
  *
  * @package HebProductPublisher
  */
@@ -34,7 +34,7 @@ class Heb_Product_Publisher_Settings_Sync {
 				'permalink_structure',
 				'category_base',
 				'tag_base',
-				'show_on_front',     // 'page' / 'posts'
+				'show_on_front',
 				'posts_per_page',
 				'thumbnail_size_w',
 				'thumbnail_size_h',
@@ -43,6 +43,8 @@ class Heb_Product_Publisher_Settings_Sync {
 				'large_size_w',
 				'large_size_h',
 				'thumbnail_crop',
+				'image_default_link_type',
+				'image_default_size',
 			]
 		);
 	}
@@ -73,6 +75,64 @@ class Heb_Product_Publisher_Settings_Sync {
 			[
 				'page_on_front',
 				'page_for_posts',
+				'elementor_active_kit',
+			]
+		);
+	}
+
+	/**
+	 * Elementor 全局 option（标量或数组，不走翻译）。
+	 *
+	 * @return array<int,string>
+	 */
+	public static function elementor_options() {
+		return (array) apply_filters(
+			'heb_pp_settings_elementor_options',
+			[
+				'elementor_cpt_support',
+				'elementor_css_print_method',
+				'elementor_default_generic_fonts',
+				'elementor_disable_color_schemes',
+				'elementor_disable_typography_schemes',
+				'elementor_container_width',
+				'elementor_viewport_lg',
+				'elementor_viewport_md',
+				'elementor_viewport_sm',
+				'elementor_global_image_lightbox',
+				'elementor_experiment-container',
+			]
+		);
+	}
+
+	/**
+	 * Yoast SEO 全局 option（整包复制，模板内 %%vars%% 跨语言通用）。
+	 *
+	 * @return array<int,string>
+	 */
+	public static function yoast_options() {
+		return (array) apply_filters(
+			'heb_pp_settings_yoast_options',
+			[
+				'wpseo',
+				'wpseo_titles',
+				'wpseo_social',
+			]
+		);
+	}
+
+	/**
+	 * theme_mod 同步时排除的键（菜单/小工具/附件 id 由专门流程处理）。
+	 *
+	 * @return array<int,string>
+	 */
+	public static function theme_mod_exclude_keys() {
+		return (array) apply_filters(
+			'heb_pp_settings_theme_mod_exclude',
+			[
+				'nav_menu_locations',
+				'sidebars_widgets',
+				'custom_logo',
+				'site_icon',
 			]
 		);
 	}
@@ -84,11 +144,14 @@ class Heb_Product_Publisher_Settings_Sync {
 	 */
 	public static function build_payload() {
 		$payload = [
-			'source_site'    => (string) wp_parse_url( home_url(), PHP_URL_HOST ),
-			'source_locale'  => Heb_Product_Publisher_Admin_Settings::source_locale(),
-			'copy'           => [],
-			'translate'      => [],
-			'post_refs'      => [],
+			'source_site'   => (string) wp_parse_url( home_url(), PHP_URL_HOST ),
+			'source_locale' => Heb_Product_Publisher_Admin_Settings::source_locale(),
+			'copy'          => [],
+			'translate'     => [],
+			'post_refs'     => [],
+			'elementor'     => [],
+			'yoast'         => [],
+			'theme_mods'    => [],
 		];
 		foreach ( self::copy_options() as $opt ) {
 			$payload['copy'][ $opt ] = get_option( $opt );
@@ -107,7 +170,41 @@ class Heb_Product_Publisher_Settings_Sync {
 				];
 			}
 		}
+		foreach ( self::elementor_options() as $opt ) {
+			$v = get_option( $opt );
+			if ( null !== $v && false !== $v && '' !== $v ) {
+				$payload['elementor'][ $opt ] = $v;
+			}
+		}
+		foreach ( self::yoast_options() as $opt ) {
+			$v = get_option( $opt );
+			if ( is_array( $v ) && ! empty( $v ) ) {
+				$payload['yoast'][ $opt ] = $v;
+			}
+		}
+		$payload['theme_mods'] = self::collect_theme_mods();
 		return $payload;
+	}
+
+	/**
+	 * 收集当前子主题 theme_mod（白名单排除后整包复制）。
+	 *
+	 * @return array<string,mixed>
+	 */
+	public static function collect_theme_mods() {
+		$mods    = get_theme_mods();
+		$exclude = array_flip( self::theme_mod_exclude_keys() );
+		$out     = [];
+		if ( ! is_array( $mods ) ) {
+			return $out;
+		}
+		foreach ( $mods as $key => $val ) {
+			if ( ! is_string( $key ) || isset( $exclude[ $key ] ) ) {
+				continue;
+			}
+			$out[ $key ] = $val;
+		}
+		return (array) apply_filters( 'heb_pp_settings_theme_mods_payload', $out );
 	}
 
 	/**

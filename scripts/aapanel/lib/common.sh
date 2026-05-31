@@ -67,6 +67,44 @@ die() {
 	exit 1
 }
 
+warn() {
+	echo "警告: $*" >&2
+}
+
+# 诊断目录是否像 WordPress 根目录
+diagnose_wp_root() {
+	local path="$1"
+	echo "目录: $path"
+	if [[ ! -d "$path" ]]; then
+		echo "  ✗ 目录不存在（请先在 aaPanel → 网站 里添加该域名）"
+		return 1
+	fi
+	local ok=1
+	[[ -f "$path/wp-config.php" ]] && echo "  ✓ wp-config.php" || { echo "  ✗ 缺少 wp-config.php"; ok=0; }
+	[[ -f "$path/wp-load.php" ]] && echo "  ✓ wp-load.php" || { echo "  ✗ 缺少 wp-load.php"; ok=0; }
+	[[ -d "$path/wp-content" ]] && echo "  ✓ wp-content/" || echo "  · 无 wp-content/"
+	[[ -d "$path/wp-admin" ]] && echo "  ✓ wp-admin/" || echo "  · 无 wp-admin/"
+	if [[ "$ok" -eq 0 ]]; then
+		echo ""
+		echo "  该目录还不是完整 WordPress。可选："
+		echo "  A) aaPanel 已建站点+数据库 → 用 fresh 模式："
+		echo "     bash heb-aapanel.sh fresh --domain DOMAIN --locale LOCALE --db-name ... --db-user ... --db-pass ..."
+		echo "  B) 已从主站复制整站 → 确认 wp-config.php 也在该目录后再 prep"
+		return 1
+	fi
+	return 0
+}
+
+assert_wp_root() {
+	local path="$1"
+	if [[ -f "$path/wp-config.php" && -f "$path/wp-load.php" ]]; then
+		return 0
+	fi
+	echo "错误: 不是 WordPress 目录：$path" >&2
+	diagnose_wp_root "$path" >&2 || true
+	exit 1
+}
+
 info() {
 	echo "==> $*"
 }
@@ -151,6 +189,26 @@ install_core_language() {
 		|| wp_run "$path" option update WPLANG "$lang" 2>/dev/null || true
 }
 
+# 若 heb-aapanel.env 设置了 WP_ADMIN_PASS，同步管理员密码（prep 不改账号，除非显式 --sync-admin）
+sync_admin_from_env() {
+	local path="$1"
+	local user pass email
+	user="${WP_ADMIN_USER:-admin}"
+	pass="${WP_ADMIN_PASS:-}"
+	email="${WP_ADMIN_EMAIL:-admin@example.com}"
+	if [[ -z "$pass" ]]; then
+		warn "未设置 WP_ADMIN_PASS，跳过管理员密码同步"
+		return 0
+	fi
+	if wp_run "$path" user get "$user" --field=ID >/dev/null 2>&1; then
+		wp_run "$path" user update "$user" --user_pass="$pass" --user_email="$email" 2>/dev/null || true
+		info "已更新管理员 $user 密码（来自 env）"
+	else
+		wp_run "$path" user create "$user" "$email" --role=administrator --user_pass="$pass" 2>/dev/null || true
+		info "已创建管理员 $user"
+	fi
+}
+
 print_next_steps() {
 	local domain="$1"
 	local locale="$2"
@@ -171,7 +229,8 @@ print_next_steps() {
       目标语言： $locale
 
 2) 主站 → HEB 分发 → 站点 Bootstrap
-   → 先 Dry run → 再正式跑（全 scope）
+   → 先 Dry run → 再正式跑（全 scope，含 settings + menus）
+   → prep 只清空内容，不会自动有产品/页面，必须 Bootstrap
 
 3) 主站 → 分发总览 → 刷新 manifest 验收
 

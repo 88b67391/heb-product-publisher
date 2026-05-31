@@ -26,6 +26,7 @@ LOCALE=""
 FROM_URL=""
 TO_URL=""
 YES=0
+SYNC_ADMIN=0
 
 usage() {
 	cat <<'EOF'
@@ -39,6 +40,7 @@ usage() {
   --from-url URL      替换源 URL（默认 heb-aapanel.env 的 MAIN_URL）
   --to-url URL        替换目标 URL（默认 https://DOMAIN）
   --yes               不交互确认，直接清空内容
+  --sync-admin        用 heb-aapanel.env 的 WP_ADMIN_PASS 同步管理员密码
   prep-all            按 LANG_SITES 批量处理
 EOF
 	exit "${1:-0}"
@@ -52,6 +54,7 @@ while [[ $# -gt 0 ]]; do
 		--from-url) FROM_URL="$2"; shift 2 ;;
 		--to-url) TO_URL="$2"; shift 2 ;;
 		--yes) YES=1; shift ;;
+		--sync-admin) SYNC_ADMIN=1; shift ;;
 		-h|--help) usage 0 ;;
 		*) die "未知参数: $1" ;;
 	esac
@@ -65,7 +68,12 @@ prep_one() {
 	local target
 	target="$(site_path "$domain")"
 
-	[[ -f "$target/wp-config.php" ]] || die "不是 WordPress 目录：$target"
+	[[ -f "$target/wp-config.php" && -f "$target/wp-load.php" ]] || {
+		warn "跳过 $domain：不是完整 WordPress（缺少 wp-config.php 或未安装）"
+		diagnose_wp_root "$target" || true
+		echo ""
+		return 1
+	}
 
 	info "处理 $domain ($locale)"
 	info "URL: $from_url → $to_url"
@@ -118,6 +126,10 @@ prep_one() {
 	activate_heb_plugins "$target"
 	wp_run "$target" option update heb_pp_site_role receiver 2>/dev/null || true
 
+	if [[ "$SYNC_ADMIN" -eq 1 ]]; then
+		sync_admin_from_env "$target"
+	fi
+
 	# 清空可能干扰 Bootstrap 的 lang_map / source meta（旧克隆残留）
 	info "清理 HEB 分发 meta…"
 	wp_run "$target" db query "DELETE FROM ${TABLE_PREFIX}postmeta WHERE meta_key LIKE '_heb_publisher_%' OR meta_key LIKE '_heb_pp_%';" 2>/dev/null || true
@@ -129,12 +141,19 @@ prep_one() {
 
 if [[ "$MODE" == "all" ]]; then
 	[[ ${#LANG_SITES[@]} -gt 0 ]] || die "heb-aapanel.env 中 LANG_SITES 为空"
+	ok_n=0
+	skip_n=0
 	for entry in "${LANG_SITES[@]}"; do
 		d="${entry%%:*}"
 		l="${entry#*:}"
-		prep_one "$d" "$l"
+		if prep_one "$d" "$l"; then
+			ok_n=$((ok_n + 1))
+		else
+			skip_n=$((skip_n + 1))
+		fi
 		echo ""
 	done
+	info "完成：成功 $ok_n 个，跳过 $skip_n 个（未安装 WP 的站点请用 fresh 模式）"
 	exit 0
 fi
 

@@ -33,6 +33,7 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 		add_action( 'admin_menu', [ $this, 'add_menu' ], 12 );
 		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_assets' ] );
 		add_action( 'wp_ajax_heb_pp_bs_start', [ $this, 'ajax_start' ] );
+		add_action( 'wp_ajax_heb_pp_bs_resend', [ $this, 'ajax_resend' ] );
 		add_action( 'wp_ajax_heb_pp_bs_status', [ $this, 'ajax_status' ] );
 		add_action( 'wp_ajax_heb_pp_bs_cancel', [ $this, 'ajax_cancel' ] );
 		add_action( 'wp_ajax_heb_pp_bs_retry', [ $this, 'ajax_retry' ] );
@@ -69,6 +70,8 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 					'confirmDryRun' => __( 'Dry run 模式：只统计数量并验证连接，不会实际推送。继续？', 'heb-product-publisher' ),
 					'confirmRetry'  => __( '仅重试该 job 中失败的项？', 'heb-product-publisher' ),
 					'confirmCancel' => __( '取消该 Bootstrap job？已完成的任务不会回滚。', 'heb-product-publisher' ),
+					'confirmResendSettings' => __( '仅重发 WordPress 全局设置（含 Elementor/Yoast/theme_mods）到该站点？', 'heb-product-publisher' ),
+					'confirmResendMenus'    => __( '仅重发导航菜单到该站点？', 'heb-product-publisher' ),
 					'starting'      => __( '启动中…', 'heb-product-publisher' ),
 					'selectSite'    => __( '请选择目标站点。', 'heb-product-publisher' ),
 				],
@@ -86,7 +89,7 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 		<div class="wrap heb-pp-bootstrap">
 			<h1><?php esc_html_e( 'HEB Site Bootstrap', 'heb-product-publisher' ); ?></h1>
 			<p class="description">
-				<?php esc_html_e( '一键把主站全部 distributable 内容（分类 + 产品 + 单页 + Elementor 数据）推送到指定的语言站。任务通过 Action Scheduler 异步运行；关闭页面不影响。', 'heb-product-publisher' ); ?>
+				<?php esc_html_e( '一键把主站全部 distributable 内容（分类 + 产品 + 单页 + Elementor 模板库）推送到指定的语言站。任务通过 Action Scheduler 异步运行；关闭页面不影响。', 'heb-product-publisher' ); ?>
 			</p>
 
 			<?php if ( empty( $sites ) ) : ?>
@@ -121,8 +124,8 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 							<td>
 								<fieldset>
 									<label><input type="checkbox" id="heb-pp-bs-scope-terms" checked /> <?php esc_html_e( '分类（terms）', 'heb-product-publisher' ); ?></label><br />
-									<label><input type="checkbox" id="heb-pp-bs-scope-posts" checked /> <?php esc_html_e( '内容（products / solutions / pages）', 'heb-product-publisher' ); ?></label><br />
-									<label><input type="checkbox" id="heb-pp-bs-scope-settings" checked /> <?php esc_html_e( 'WordPress 全局设置（标题、描述、permalinks、首页）', 'heb-product-publisher' ); ?></label><br />
+									<label><input type="checkbox" id="heb-pp-bs-scope-posts" checked /> <?php esc_html_e( '内容（products / solutions / pages / elementor_library）', 'heb-product-publisher' ); ?></label><br />
+									<label><input type="checkbox" id="heb-pp-bs-scope-settings" checked /> <?php esc_html_e( 'WordPress 全局设置（标题、permalinks、首页、Elementor Kit、Yoast、theme_mods）', 'heb-product-publisher' ); ?></label><br />
 									<label><input type="checkbox" id="heb-pp-bs-scope-menus" checked /> <?php esc_html_e( '导航菜单（含菜单项 object 反查）', 'heb-product-publisher' ); ?></label><br />
 									<label><input type="checkbox" id="heb-pp-bs-scope-menu-locations" /> <?php esc_html_e( '同时绑定主题菜单位置（危险：会覆盖子站 nav_menu_locations）', 'heb-product-publisher' ); ?></label><br />
 									<label><input type="checkbox" id="heb-pp-bs-dry-run" /> <?php esc_html_e( 'Dry run（仅探测连接 + 统计数量，不实际推送）', 'heb-product-publisher' ); ?></label>
@@ -134,6 +137,11 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 					<p>
 						<button type="button" class="button button-primary button-large" id="heb-pp-bs-start"><?php esc_html_e( '启动 Bootstrap', 'heb-product-publisher' ); ?></button>
 						<span id="heb-pp-bs-start-msg" style="margin-left:8px;"></span>
+					</p>
+					<p class="description" style="margin-top:12px;">
+						<?php esc_html_e( '快捷重发（不删已有内容，仅推送选中 scope）：', 'heb-product-publisher' ); ?>
+						<button type="button" class="button" id="heb-pp-bs-resend-settings"><?php esc_html_e( '仅重发 settings', 'heb-product-publisher' ); ?></button>
+						<button type="button" class="button" id="heb-pp-bs-resend-menus"><?php esc_html_e( '仅重发 menus', 'heb-product-publisher' ); ?></button>
 					</p>
 				</div>
 			<?php endif; ?>
@@ -247,6 +255,35 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 				'notice' => isset( $res['error'] ) ? (string) $res['error'] : '',
 			]
 		);
+	}
+
+	public function ajax_resend() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( [ 'message' => __( '权限不足。', 'heb-product-publisher' ) ], 403 );
+		}
+		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
+
+		$site_id = isset( $_POST['site_id'] ) ? sanitize_text_field( wp_unslash( (string) $_POST['site_id'] ) ) : '';
+		$scope   = isset( $_POST['scope'] ) ? sanitize_key( wp_unslash( (string) $_POST['scope'] ) ) : '';
+		if ( '' === $site_id ) {
+			wp_send_json_error( [ 'message' => __( '未选择站点。', 'heb-product-publisher' ) ] );
+		}
+		$opts = [
+			'scope_terms'          => false,
+			'scope_posts'          => false,
+			'scope_menus'          => 'menus' === $scope,
+			'scope_settings'       => 'settings' === $scope,
+			'scope_menu_locations' => 'menus' === $scope && ! empty( $_POST['scope_menu_locations'] ),
+			'dry_run'              => false,
+		];
+		if ( ! $opts['scope_menus'] && ! $opts['scope_settings'] ) {
+			wp_send_json_error( [ 'message' => __( '无效的 scope。', 'heb-product-publisher' ) ] );
+		}
+		$res = Heb_Product_Publisher_Bootstrap_Queue::start( $site_id, $opts );
+		if ( ! empty( $res['error'] ) && empty( $res['job_id'] ) ) {
+			wp_send_json_error( [ 'message' => (string) $res['error'] ] );
+		}
+		wp_send_json_success( [ 'job_id' => (string) $res['job_id'] ] );
 	}
 
 	public function ajax_status() {

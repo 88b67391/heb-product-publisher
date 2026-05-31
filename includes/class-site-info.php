@@ -118,18 +118,45 @@ class Heb_Product_Publisher_Site_Info {
 			];
 		}
 
-		return rest_ensure_response(
-			[
-				'success'                  => true,
-				'site_url'                 => home_url( '/' ),
-				'home_host'                => wp_parse_url( home_url( '/' ), PHP_URL_HOST ),
-				'locale'                   => get_locale(),
-				'post_type'                => $post_type,
-				'taxonomies'               => $tax_out,
-				'distributable_post_types' => $allowed,
-				'plugin_version'           => defined( 'HEB_PP_VERSION' ) ? HEB_PP_VERSION : '',
-			]
-		);
+		$response = [
+			'success'                  => true,
+			'site_url'                 => home_url( '/' ),
+			'home_host'                => wp_parse_url( home_url( '/' ), PHP_URL_HOST ),
+			'locale'                   => get_locale(),
+			'post_type'                => $post_type,
+			'taxonomies'               => $tax_out,
+			'distributable_post_types' => $allowed,
+			'plugin_version'           => defined( 'HEB_PP_VERSION' ) ? HEB_PP_VERSION : '',
+		];
+		if ( ! empty( $body['include_config'] ) ) {
+			$response['config'] = self::collect_config_snapshot();
+		}
+		return rest_ensure_response( $response );
+	}
+
+	/**
+	 * Bootstrap 验收用：子站关键配置快照。
+	 *
+	 * @return array<string,mixed>
+	 */
+	public static function collect_config_snapshot() {
+		$post_counts = [];
+		foreach ( heb_pp_distributable_post_types() as $pt ) {
+			if ( ! post_type_exists( $pt ) ) {
+				continue;
+			}
+			$post_counts[ $pt ] = (int) wp_count_posts( $pt )->publish;
+		}
+		return [
+			'permalink_structure'  => (string) get_option( 'permalink_structure', '' ),
+			'blogname'             => (string) get_option( 'blogname', '' ),
+			'blogdescription'      => (string) get_option( 'blogdescription', '' ),
+			'show_on_front'        => (string) get_option( 'show_on_front', 'posts' ),
+			'page_on_front'        => (int) get_option( 'page_on_front', 0 ),
+			'page_for_posts'       => (int) get_option( 'page_for_posts', 0 ),
+			'elementor_active_kit' => (int) get_option( 'elementor_active_kit', 0 ),
+			'post_counts'          => $post_counts,
+		];
 	}
 
 	/**
