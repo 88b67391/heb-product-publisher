@@ -19,7 +19,9 @@ HEB × aaPanel 开站工具
 【场景 A】aaPanel 新建了空站点 + 数据库（推荐）
   1. aaPanel → 网站 → 添加站点（如 ja.hongbotex.com）
   2. aaPanel → 数据库 → 创建并关联到该站点
-  3. cp scripts/aapanel/heb-aapanel.env.example scripts/aapanel/heb-aapanel.env
+  3. sudo bash scripts/aapanel/heb-aapanel.sh init-env
+     sudo nano /etc/heb-aapanel.env
+     （配置在 /etc/，插件更新不会丢失）
   4. sudo bash scripts/aapanel/heb-aapanel.sh fresh \
        --domain ja.hongbotex.com --locale ja_JP \
        --db-name 库名 --db-user 用户名 --db-pass '密码'
@@ -35,15 +37,20 @@ HEB × aaPanel 开站工具
   诊断各语言站 WordPress 是否就绪：
   sudo bash scripts/aapanel/heb-aapanel.sh check
 
-  prep 后同步管理员密码（需在 heb-aapanel.env 设置 WP_ADMIN_PASS）：
+  prep 后同步管理员密码（需在 /etc/heb-aapanel.env 设置 WP_ADMIN_PASS）：
   sudo bash scripts/aapanel/heb-aapanel.sh prep --domain ja.hongbotex.com --locale ja_JP --sync-admin --yes
 
+【配置】/etc/heb-aapanel.env（或 export HEB_AAPANEL_ENV=自定义路径）
+  首次：sudo bash heb-aapanel.sh init-env
 【依赖】服务器需安装 WP-CLI：
   curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
   chmod +x wp-cli.phar && mv wp-cli.phar /usr/local/bin/wp
-
-【配置】heb-aapanel.env 中设置 MAIN_DOMAIN=www.hongbotex.com
 EOF
+		;;
+	init-env)
+		# shellcheck source=lib/common.sh
+		source "$SCRIPT_DIR/lib/common.sh"
+		init_env_file
 		;;
 	fresh|new)
 		exec bash "$SCRIPT_DIR/heb-new-lang-site.sh" "$@" ;;

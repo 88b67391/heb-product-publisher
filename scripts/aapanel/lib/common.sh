@@ -7,19 +7,61 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AAPANEL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# 持久化路径：WordPress 更新插件会整目录替换，勿把 env 放在 plugins/ 内。
+HEB_AAPANEL_ENV_SYSTEM="${HEB_AAPANEL_ENV_SYSTEM:-/etc/heb-aapanel.env}"
+HEB_AAPANEL_ENV_LEGACY="$AAPANEL_DIR/heb-aapanel.env"
+
+# 解析 env 路径：HEB_AAPANEL_ENV > /etc/heb-aapanel.env > 插件内旧路径（自动迁移）
+resolve_env_file() {
+	if [[ -n "${HEB_AAPANEL_ENV:-}" ]]; then
+		echo "${HEB_AAPANEL_ENV}"
+		return
+	fi
+	if [[ -f "$HEB_AAPANEL_ENV_SYSTEM" ]]; then
+		echo "$HEB_AAPANEL_ENV_SYSTEM"
+		return
+	fi
+	if [[ -f "$HEB_AAPANEL_ENV_LEGACY" ]]; then
+		migrate_env_to_system "$HEB_AAPANEL_ENV_LEGACY"
+		echo "$HEB_AAPANEL_ENV_SYSTEM"
+		return
+	fi
+	echo "$HEB_AAPANEL_ENV_SYSTEM"
+}
+
+migrate_env_to_system() {
+	local legacy="$1"
+	info "迁移配置：$legacy → $HEB_AAPANEL_ENV_SYSTEM（避免插件更新丢失）"
+	cp "$legacy" "$HEB_AAPANEL_ENV_SYSTEM"
+	chmod 600 "$HEB_AAPANEL_ENV_SYSTEM" 2>/dev/null || true
+	warn "以后请只编辑 $HEB_AAPANEL_ENV_SYSTEM"
+}
+
+init_env_file() {
+	if [[ -f "$HEB_AAPANEL_ENV_SYSTEM" ]]; then
+		die "配置文件已存在：$HEB_AAPANEL_ENV_SYSTEM"
+	fi
+	[[ -f "$AAPANEL_DIR/heb-aapanel.env.example" ]] || die "缺少 heb-aapanel.env.example"
+	cp "$AAPANEL_DIR/heb-aapanel.env.example" "$HEB_AAPANEL_ENV_SYSTEM"
+	chmod 600 "$HEB_AAPANEL_ENV_SYSTEM" 2>/dev/null || true
+	info "已创建 $HEB_AAPANEL_ENV_SYSTEM"
+	echo "请编辑该文件后运行：sudo bash heb-aapanel.sh check"
+}
+
 load_env() {
-	local env_file="${HEB_AAPANEL_ENV:-$AAPANEL_DIR/heb-aapanel.env}"
-	if [[ ! -f "$env_file" && -f "$AAPANEL_DIR/heb-aapanel.env.example" ]]; then
-		env_file="$AAPANEL_DIR/heb-aapanel.env.example"
+	local env_file
+	env_file="$(resolve_env_file)"
+	if [[ ! -f "$env_file" ]]; then
+		die "缺少配置文件 $env_file。首次使用请运行：sudo bash heb-aapanel.sh init-env"
 	fi
-	if [[ -f "$env_file" ]]; then
-		validate_env_file "$env_file"
-		# source 时暂时关闭 -u：双引号内 $ 仍会被展开，validate 已拦截常见误用。
-		set +u
-		# shellcheck disable=SC1090
-		source "$env_file"
-		set -u
+	if [[ "$env_file" == *heb-aapanel.env.example ]]; then
+		die "请勿直接使用 .env.example，请运行：sudo bash heb-aapanel.sh init-env"
 	fi
+	validate_env_file "$env_file"
+	set +u
+	# shellcheck disable=SC1090
+	source "$env_file"
+	set -u
 
 	WWW_ROOT="${WWW_ROOT:-/www/wwwroot}"
 	MAIN_DOMAIN="${MAIN_DOMAIN:-www.hongbotex.com}"
