@@ -508,147 +508,213 @@ class Heb_Product_Publisher_Receiver {
 	 */
 	public function rest_import_settings( $request ) {
 		Heb_Product_Publisher_Runtime::raise();
-		$body = $this->parse_authenticated_request( $request );
-		if ( is_wp_error( $body ) ) {
-			return $body;
-		}
-		$source_site = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
-		if ( '' === $source_site ) {
-			return new \WP_Error( 'heb_pub_bad_payload', __( 'Bad payload.', 'heb-product-publisher' ), [ 'status' => 400 ] );
-		}
+		try {
+			$body = $this->parse_authenticated_request( $request );
+			if ( is_wp_error( $body ) ) {
+				return $body;
+			}
+			if ( ! class_exists( 'Heb_Product_Publisher_Settings_Sync' ) ) {
+				return new \WP_Error(
+					'heb_pub_settings_unavailable',
+					__( 'Receiver 插件版本过旧，缺少 Settings_Sync。请更新子站 heb-product-publisher 到最新版后重试。', 'heb-product-publisher' ),
+					[ 'status' => 503 ]
+				);
+			}
+			$source_site = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+			if ( '' === $source_site ) {
+				return new \WP_Error( 'heb_pub_bad_payload', __( 'Bad payload.', 'heb-product-publisher' ), [ 'status' => 400 ] );
+			}
 
-		$copy_allowed      = Heb_Product_Publisher_Settings_Sync::copy_options();
-		$translate_allowed = Heb_Product_Publisher_Settings_Sync::translate_options();
-		$ref_allowed       = Heb_Product_Publisher_Settings_Sync::post_ref_options();
+			$copy_allowed      = Heb_Product_Publisher_Settings_Sync::copy_options();
+			$translate_allowed = Heb_Product_Publisher_Settings_Sync::translate_options();
+			$ref_allowed       = Heb_Product_Publisher_Settings_Sync::post_ref_options();
 
-		$applied = [];
-		$skipped = [];
-		$rewrite_options = [ 'permalink_structure', 'category_base', 'tag_base' ];
-		$flush_rewrite   = false;
+			$applied = [];
+			$skipped = [];
+			$errors  = [];
+			$rewrite_options = [ 'permalink_structure', 'category_base', 'tag_base' ];
+			$flush_rewrite   = false;
 
-		foreach ( (array) ( $body['copy'] ?? [] ) as $opt => $val ) {
-			$opt = sanitize_key( (string) $opt );
-			if ( ! in_array( $opt, $copy_allowed, true ) ) {
-				$skipped[] = $opt . ' (not whitelisted)';
-				continue;
-			}
-			$safe = $this->sanitize_settings_option_value( $opt, $val );
-			if ( null === $safe ) {
-				$skipped[] = $opt . ' (invalid value type)';
-				continue;
-			}
-			if ( in_array( $opt, $rewrite_options, true ) && get_option( $opt ) !== $safe ) {
-				$flush_rewrite = true;
-			}
-			update_option( $opt, $safe );
-			$applied[] = $opt;
-		}
-		foreach ( (array) ( $body['translate'] ?? [] ) as $opt => $val ) {
-			$opt = sanitize_key( (string) $opt );
-			if ( ! in_array( $opt, $translate_allowed, true ) ) {
-				$skipped[] = $opt . ' (not whitelisted)';
-				continue;
-			}
-			update_option( $opt, sanitize_text_field( (string) $val ) );
-			$applied[] = $opt;
-		}
-		foreach ( (array) ( $body['post_refs'] ?? [] ) as $opt => $ref ) {
-			$opt = sanitize_key( (string) $opt );
-			if ( ! in_array( $opt, $ref_allowed, true ) || ! is_array( $ref ) ) {
-				$skipped[] = $opt . ' (not whitelisted or bad ref)';
-				continue;
-			}
-			$source_post_id = (int) ( $ref['source_post_id'] ?? 0 );
-			if ( $source_post_id <= 0 ) {
-				$skipped[] = $opt . ' (missing source_post_id)';
-				continue;
-			}
-			// 跨所有 distributable post types 找一个匹配的 local post。
-			$local_id = 0;
-			foreach ( heb_pp_distributable_post_types() as $pt ) {
-				$local_id = $this->find_by_source( $pt, $source_post_id, $source_site );
-				if ( $local_id > 0 ) {
-					break;
-				}
-			}
-			if ( $local_id <= 0 ) {
-				$skipped[] = $opt . ' (no local post matched source_post_id=' . $source_post_id . ')';
-				continue;
-			}
-			update_option( $opt, (int) $local_id );
-			$applied[] = $opt;
-		}
-
-		if ( $flush_rewrite ) {
-			flush_rewrite_rules( false );
-		}
-
-		// Elementor 全局 options。
-		foreach ( (array) ( $body['elementor'] ?? [] ) as $opt => $val ) {
-			$opt = sanitize_key( (string) $opt );
-			if ( ! in_array( $opt, Heb_Product_Publisher_Settings_Sync::elementor_options(), true ) ) {
-				$skipped[] = 'elementor:' . $opt . ' (not whitelisted)';
-				continue;
-			}
-			if ( ! $this->is_safe_elementor_option_value( $opt, $val ) ) {
-				$skipped[] = 'elementor:' . $opt . ' (invalid value type)';
-				continue;
-			}
-			update_option( $opt, $val );
-			$applied[] = 'elementor:' . $opt;
-		}
-
-		// Yoast 全局 options（整包数组复制）。
-		foreach ( (array) ( $body['yoast'] ?? [] ) as $opt => $val ) {
-			$opt = sanitize_key( (string) $opt );
-			if ( ! in_array( $opt, Heb_Product_Publisher_Settings_Sync::yoast_options(), true ) ) {
-				$skipped[] = 'yoast:' . $opt . ' (not whitelisted)';
-				continue;
-			}
-			if ( ! is_array( $val ) ) {
-				$skipped[] = 'yoast:' . $opt . ' (expected array)';
-				continue;
-			}
-			update_option( $opt, $val );
-			$applied[] = 'yoast:' . $opt;
-		}
-
-		// theme_mod（Customizer 存于 theme_mods_{stylesheet}）。
-		if ( ! empty( $body['theme_mods'] ) && is_array( $body['theme_mods'] ) ) {
-			$exclude = array_flip( Heb_Product_Publisher_Settings_Sync::theme_mod_exclude_keys() );
-			$mod_n   = 0;
-			foreach ( $body['theme_mods'] as $mod_key => $mod_val ) {
-				if ( ! is_string( $mod_key ) || '' === $mod_key || isset( $exclude[ $mod_key ] ) ) {
+			foreach ( (array) ( $body['copy'] ?? [] ) as $opt => $val ) {
+				$opt = sanitize_key( (string) $opt );
+				if ( ! in_array( $opt, $copy_allowed, true ) ) {
+					$skipped[] = $opt . ' (not whitelisted)';
 					continue;
 				}
-				set_theme_mod( $mod_key, $mod_val );
-				++$mod_n;
-			}
-			if ( $mod_n > 0 ) {
-				$applied[] = 'theme_mods:' . $mod_n;
-			}
-		}
-
-		// Elementor Kit 变更后清 CSS 缓存。
-		if ( class_exists( '\\Elementor\\Plugin' ) ) {
-			try {
-				$plugin = \Elementor\Plugin::$instance;
-				if ( $plugin && isset( $plugin->files_manager ) && method_exists( $plugin->files_manager, 'clear_cache' ) ) {
-					$plugin->files_manager->clear_cache();
+				$safe = $this->sanitize_settings_option_value( $opt, $val );
+				if ( null === $safe ) {
+					$skipped[] = $opt . ' (invalid value type)';
+					continue;
 				}
-			} catch ( \Throwable $e ) {
-				unset( $e );
+				try {
+					if ( in_array( $opt, $rewrite_options, true ) && get_option( $opt ) !== $safe ) {
+						$flush_rewrite = true;
+					}
+					update_option( $opt, $safe );
+					$applied[] = $opt;
+				} catch ( \Throwable $e ) {
+					$skipped[] = $opt . ' (error)';
+					$errors[]  = $opt . ': ' . $e->getMessage();
+				}
 			}
-		}
+			foreach ( (array) ( $body['translate'] ?? [] ) as $opt => $val ) {
+				$opt = sanitize_key( (string) $opt );
+				if ( ! in_array( $opt, $translate_allowed, true ) ) {
+					$skipped[] = $opt . ' (not whitelisted)';
+					continue;
+				}
+				try {
+					update_option( $opt, sanitize_text_field( (string) $val ) );
+					$applied[] = $opt;
+				} catch ( \Throwable $e ) {
+					$skipped[] = $opt . ' (error)';
+					$errors[]  = $opt . ': ' . $e->getMessage();
+				}
+			}
+			foreach ( (array) ( $body['post_refs'] ?? [] ) as $opt => $ref ) {
+				$opt = sanitize_key( (string) $opt );
+				if ( ! in_array( $opt, $ref_allowed, true ) || ! is_array( $ref ) ) {
+					$skipped[] = $opt . ' (not whitelisted or bad ref)';
+					continue;
+				}
+				$source_post_id = (int) ( $ref['source_post_id'] ?? 0 );
+				if ( $source_post_id <= 0 ) {
+					$skipped[] = $opt . ' (missing source_post_id)';
+					continue;
+				}
+				$local_id = 0;
+				foreach ( heb_pp_distributable_post_types() as $pt ) {
+					$local_id = $this->find_by_source( $pt, $source_post_id, $source_site );
+					if ( $local_id > 0 ) {
+						break;
+					}
+				}
+				if ( $local_id <= 0 ) {
+					$skipped[] = $opt . ' (no local post matched source_post_id=' . $source_post_id . ')';
+					continue;
+				}
+				try {
+					update_option( $opt, (int) $local_id );
+					$applied[] = $opt;
+				} catch ( \Throwable $e ) {
+					$skipped[] = $opt . ' (error)';
+					$errors[]  = $opt . ': ' . $e->getMessage();
+				}
+			}
 
-		return rest_ensure_response(
-			[
-				'success'         => true,
-				'applied'         => $applied,
-				'skipped'         => $skipped,
-				'rewrite_flushed' => $flush_rewrite,
-			]
-		);
+			if ( $flush_rewrite ) {
+				try {
+					flush_rewrite_rules( false );
+				} catch ( \Throwable $e ) {
+					$errors[] = 'flush_rewrite_rules: ' . $e->getMessage();
+				}
+			}
+
+			foreach ( (array) ( $body['elementor'] ?? [] ) as $opt => $val ) {
+				$opt = sanitize_key( (string) $opt );
+				if ( ! in_array( $opt, Heb_Product_Publisher_Settings_Sync::elementor_options(), true ) ) {
+					$skipped[] = 'elementor:' . $opt . ' (not whitelisted)';
+					continue;
+				}
+				if ( ! $this->is_safe_elementor_option_value( $opt, $val ) ) {
+					$skipped[] = 'elementor:' . $opt . ' (invalid value type)';
+					continue;
+				}
+				try {
+					update_option( $opt, $val );
+					$applied[] = 'elementor:' . $opt;
+				} catch ( \Throwable $e ) {
+					$skipped[] = 'elementor:' . $opt . ' (error)';
+					$errors[]  = 'elementor:' . $opt . ': ' . $e->getMessage();
+				}
+			}
+
+			foreach ( (array) ( $body['yoast'] ?? [] ) as $opt => $val ) {
+				$opt = sanitize_key( (string) $opt );
+				if ( ! in_array( $opt, Heb_Product_Publisher_Settings_Sync::yoast_options(), true ) ) {
+					$skipped[] = 'yoast:' . $opt . ' (not whitelisted)';
+					continue;
+				}
+				if ( ! is_array( $val ) ) {
+					$skipped[] = 'yoast:' . $opt . ' (expected array)';
+					continue;
+				}
+				if ( ! $this->is_yoast_available() ) {
+					$skipped[] = 'yoast:' . $opt . ' (Yoast SEO not active)';
+					continue;
+				}
+				try {
+					update_option( $opt, $val );
+					$applied[] = 'yoast:' . $opt;
+				} catch ( \Throwable $e ) {
+					$skipped[] = 'yoast:' . $opt . ' (error)';
+					$errors[]  = 'yoast:' . $opt . ': ' . $e->getMessage();
+				}
+			}
+
+			if ( ! empty( $body['theme_mods'] ) && is_array( $body['theme_mods'] ) ) {
+				$exclude = array_flip( Heb_Product_Publisher_Settings_Sync::theme_mod_exclude_keys() );
+				$mod_n   = 0;
+				foreach ( $body['theme_mods'] as $mod_key => $mod_val ) {
+					if ( ! is_string( $mod_key ) || '' === $mod_key || isset( $exclude[ $mod_key ] ) ) {
+						continue;
+					}
+					if ( ! $this->is_safe_theme_mod_value( $mod_val ) ) {
+						$skipped[] = 'theme_mod:' . $mod_key . ' (invalid value type)';
+						continue;
+					}
+					try {
+						set_theme_mod( $mod_key, $mod_val );
+						++$mod_n;
+					} catch ( \Throwable $e ) {
+						$skipped[] = 'theme_mod:' . $mod_key . ' (error)';
+						$errors[]  = 'theme_mod:' . $mod_key . ': ' . $e->getMessage();
+					}
+				}
+				if ( $mod_n > 0 ) {
+					$applied[] = 'theme_mods:' . $mod_n;
+				}
+			}
+
+			if ( class_exists( '\\Elementor\\Plugin' ) ) {
+				try {
+					$plugin = \Elementor\Plugin::$instance;
+					if ( $plugin && isset( $plugin->files_manager ) && method_exists( $plugin->files_manager, 'clear_cache' ) ) {
+						$plugin->files_manager->clear_cache();
+					}
+				} catch ( \Throwable $e ) {
+					$errors[] = 'elementor_clear_cache: ' . $e->getMessage();
+				}
+			}
+
+			if ( empty( $applied ) && ! empty( $errors ) ) {
+				return new \WP_Error(
+					'heb_pub_settings_failed',
+					implode( '; ', array_slice( $errors, 0, 5 ) ),
+					[
+						'status'  => 500,
+						'applied' => $applied,
+						'skipped' => $skipped,
+					]
+				);
+			}
+
+			return rest_ensure_response(
+				[
+					'success'         => true,
+					'applied'         => $applied,
+					'skipped'         => $skipped,
+					'errors'          => $errors,
+					'rewrite_flushed' => $flush_rewrite,
+				]
+			);
+		} catch ( \Throwable $e ) {
+			return new \WP_Error(
+				'heb_pub_settings_fatal',
+				$e->getMessage(),
+				[ 'status' => 500 ]
+			);
+		}
 	}
 
 	/**
@@ -1161,6 +1227,37 @@ class Heb_Product_Publisher_Receiver {
 			return is_scalar( $val );
 		}
 		return is_scalar( $val ) || is_array( $val );
+	}
+
+	/**
+	 * @return bool
+	 */
+	private function is_yoast_available() {
+		return defined( 'WPSEO_VERSION' ) || class_exists( 'WPSEO_Options', false );
+	}
+
+	/**
+	 * theme_mod 值只允许 JSON 可序列化的 scalar / array。
+	 *
+	 * @param mixed $val Value.
+	 * @return bool
+	 */
+	private function is_safe_theme_mod_value( $val ) {
+		if ( is_scalar( $val ) || null === $val ) {
+			return true;
+		}
+		if ( ! is_array( $val ) ) {
+			return false;
+		}
+		array_walk_recursive(
+			$val,
+			static function ( $item ) {
+				if ( null !== $item && ! is_scalar( $item ) ) {
+					throw new \RuntimeException( 'non-scalar theme_mod value' );
+				}
+			}
+		);
+		return true;
 	}
 
 	/**
