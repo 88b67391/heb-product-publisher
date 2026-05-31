@@ -55,10 +55,10 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 
 		Heb_Product_Publisher_Bootstrap_Status::update( $job_id, [ 'status' => Heb_Product_Publisher_Bootstrap_Status::STATUS_RUNNING ] );
 
-		$probe_pt = 'products';
-		$pts      = heb_pp_distributable_post_types();
-		if ( ! empty( $pts ) ) {
-			$probe_pt = (string) $pts[0];
+		$probe_pt = 'page';
+		if ( ! post_type_exists( 'page' ) ) {
+			$pts = heb_pp_distributable_post_types();
+			$probe_pt = ! empty( $pts[0] ) ? (string) $pts[0] : 'post';
 		}
 		$res = Heb_Product_Publisher_Remote_Client::post(
 			$site,

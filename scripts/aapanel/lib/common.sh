@@ -235,6 +235,74 @@ activate_heb_plugins() {
 		|| die "heb-product-publisher 未激活，请确认 wp-content/plugins 已从主站同步"
 }
 
+# 与主站对齐：子主题 + Elementor + ACF（products/solutions CPT 依赖 ACF 结构配置）
+activate_site_stack() {
+	local path="$1"
+	local main_path
+	main_path="$(ensure_main_site)"
+	local theme
+	theme="$(wp_run "$main_path" option get stylesheet 2>/dev/null || echo hello-elementor-child)"
+	wp_run "$path" theme activate "$theme" 2>/dev/null || wp_run "$path" theme activate hello-elementor-child 2>/dev/null || true
+	for plugin in elementor advanced-custom-fields-pro advanced-custom-fields; do
+		wp_run "$path" plugin activate "$plugin" 2>/dev/null || true
+	done
+	activate_heb_plugins "$path"
+}
+
+# prep 误删 ACF 结构后，从主站重新导入 CPT/字段组定义
+repair_structural_config() {
+	local target="$1"
+	local main_path tmpdir wxr
+	main_path="$(ensure_main_site)"
+	tmpdir="$(mktemp -d)"
+
+	info "激活与主站一致的插件/主题…"
+	activate_site_stack "$target"
+
+	info "从主站导出 ACF 结构（acf-post-type / acf-field-group / acf-taxonomy）…"
+	wp_run "$main_path" export \
+		--dir="$tmpdir" \
+		--post_type=acf-post-type,acf-field-group,acf-taxonomy \
+		--skip_comments --skip_themes --skip_plugins 2>/dev/null || true
+
+	wxr="$(find "$tmpdir" -maxdepth 1 -name '*.xml' -print -quit 2>/dev/null || true)"
+	rm -rf "$tmpdir"
+	if [[ -z "$wxr" || ! -f "$wxr" ]]; then
+		die "无法从主站导出 ACF 结构。请确认主站已激活 ACF，且 products CPT 在 ACF 中已注册。"
+	fi
+
+	info "导入结构配置到 $(basename "$target") …"
+	wp_run "$target" import "$wxr" --authors=skip 2>/dev/null || true
+	wp_run "$target" rewrite flush 2>/dev/null || true
+
+	if wp_run "$target" post-type list --field=name 2>/dev/null | grep -qx 'products'; then
+		info "✓ products post type 已恢复"
+	else
+		warn "products 仍未注册，请对比主站与子站的插件/主题是否一致"
+		return 1
+	fi
+	return 0
+}
+
+check_distributable_post_types() {
+	local path="$1"
+	local label="${2:-}"
+	local missing=()
+	local pt
+	for pt in products solutions page; do
+		if ! wp_run "$path" post-type list --field=name 2>/dev/null | grep -qx "$pt"; then
+			missing+=("$pt")
+		fi
+	done
+	if [[ ${#missing[@]} -gt 0 ]]; then
+		echo "  ✗ 缺少 post type: ${missing[*]}${label:+ ($label)}"
+		echo "    → 运行: sudo bash heb-aapanel.sh repair-config --domain $(basename "$path")"
+		return 1
+	fi
+	echo "  ✓ post types: products, solutions, page"
+	return 0
+}
+
 install_core_language() {
 	local path="$1"
 	local locale="$2"

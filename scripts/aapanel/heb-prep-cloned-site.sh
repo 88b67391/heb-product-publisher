@@ -80,7 +80,7 @@ prep_one() {
 
 	if [[ "$YES" -ne 1 ]]; then
 		echo ""
-		echo "即将：search-replace 域名 + 删除所有文章/页面/产品/分类/菜单（保留用户和插件）"
+		echo "即将：search-replace 域名 + 删除产品/页面等内容（保留 ACF 结构配置、用户和插件）"
 		echo "目录：$target"
 		read -r -p "继续？[y/N] " ans
 		[[ "$ans" == [yY] ]] || die "已取消"
@@ -95,13 +95,15 @@ prep_one() {
 		wp_run "$target" search-replace "$from_http" "$to_http" --all-tables --precise --recurse-objects --skip-columns=guid 2>/dev/null || true
 	fi
 
-	info "删除所有文章…"
-	local post_ids
-	post_ids="$(wp_run "$target" post list --post_type=any --posts_per_page=-1 --format=ids 2>/dev/null || true)"
-	if [[ -n "$post_ids" ]]; then
-		# shellcheck disable=SC2086
-		wp_run "$target" post delete $post_ids --force 2>/dev/null || true
-	fi
+	info "删除 distributable 内容（保留 ACF 结构、插件配置）…"
+	local pt ids
+	for pt in products solutions page post elementor_library nav_menu_item attachment revision; do
+		ids="$(wp_run "$target" post list --post_type="$pt" --posts_per_page=-1 --format=ids 2>/dev/null || true)"
+		if [[ -n "$ids" ]]; then
+			# shellcheck disable=SC2086
+			wp_run "$target" post delete $ids --force 2>/dev/null || true
+		fi
+	done
 
 	info "删除所有分类/标签…"
 	local taxonomies
@@ -123,7 +125,7 @@ prep_one() {
 	local secret="${HEB_RECEIVER_SECRET:-$(rand_secret)}"
 	append_wp_config_constants "$target" "$secret"
 	install_core_language "$target" "$locale"
-	activate_heb_plugins "$target"
+	activate_site_stack "$target"
 	wp_run "$target" option update heb_pp_site_role receiver 2>/dev/null || true
 
 	if [[ "$SYNC_ADMIN" -eq 1 ]]; then

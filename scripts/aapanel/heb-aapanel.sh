@@ -37,11 +37,15 @@ HEB × aaPanel 开站工具
   诊断各语言站 WordPress 是否就绪：
   sudo bash scripts/aapanel/heb-aapanel.sh check
 
+  prep 误删 ACF 导致「Post type does not exist」时，从主站恢复结构：
+  sudo bash scripts/aapanel/heb-aapanel.sh repair-config --domain ko.hongbotex.com
+
   prep 后同步管理员密码（需在 /etc/heb-aapanel.env 设置 WP_ADMIN_PASS）：
   sudo bash scripts/aapanel/heb-aapanel.sh prep --domain ja.hongbotex.com --locale ja_JP --sync-admin --yes
 
 【配置】/etc/heb-aapanel.env（或 export HEB_AAPANEL_ENV=自定义路径）
   首次：sudo bash heb-aapanel.sh init-env
+
 【依赖】服务器需安装 WP-CLI：
   curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
   chmod +x wp-cli.phar && mv wp-cli.phar /usr/local/bin/wp
@@ -64,13 +68,29 @@ EOF
 		load_env
 		echo "主站:"
 		diagnose_wp_root "$(site_path "$MAIN_DOMAIN")" || true
+		check_distributable_post_types "$(site_path "$MAIN_DOMAIN")" "主站" || true
 		echo ""
 		for entry in "${LANG_SITES[@]}"; do
 			d="${entry%%:*}"
 			echo "--- $d ---"
 			diagnose_wp_root "$(site_path "$d")" || true
+			check_distributable_post_types "$(site_path "$d")" || true
 			echo ""
 		done
+		;;
+	repair-config)
+		# shellcheck source=lib/common.sh
+		source "$SCRIPT_DIR/lib/common.sh"
+		load_env
+		DOMAIN=""
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+				--domain) DOMAIN="$2"; shift 2 ;;
+				*) die "未知参数: $1（用法: repair-config --domain ko.hongbotex.com）" ;;
+			esac
+		done
+		[[ -n "$DOMAIN" ]] || die "缺少 --domain"
+		repair_structural_config "$(site_path "$DOMAIN")"
 		;;
 	*)
 		echo "未知命令: $cmd（用 help 查看）" >&2
