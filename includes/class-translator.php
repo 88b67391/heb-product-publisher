@@ -182,6 +182,10 @@ class Heb_Product_Publisher_Translator {
 	 * @return bool
 	 */
 	public static function strict_mode() {
+		if ( class_exists( 'Heb_Product_Publisher_Admin_Settings', false )
+			&& Heb_Product_Publisher_Admin_Settings::is_quality_translator() ) {
+			return true;
+		}
 		if ( class_exists( 'Heb_Product_Publisher_Bootstrap_Worker', false )
 			&& Heb_Product_Publisher_Bootstrap_Worker::in_bootstrap_item() ) {
 			return true;
@@ -208,12 +212,20 @@ class Heb_Product_Publisher_Translator {
 	}
 
 	/**
-	 * 高质量慢模型（Opus/Sonnet/GPT-4 等）默认不预切片，保留整段上下文；
-	 * Flash/Haiku 等快模型默认切片，降低 JSON 截断概率。
+	 * 质量优先：不预切片，保留整段 Elementor 上下文。
+	 * 速度优先：长 HTML 按 block 切片。JSON 解析失败时仍会拆批重试（两种模式共有）。
 	 *
 	 * @return bool
 	 */
 	public static function html_split_enabled() {
+		if ( class_exists( 'Heb_Product_Publisher_Admin_Settings', false ) ) {
+			if ( Heb_Product_Publisher_Admin_Settings::is_quality_translator() ) {
+				return (bool) apply_filters( 'heb_pp_translator_enable_html_split', false );
+			}
+			if ( Heb_Product_Publisher_Admin_Settings::PROFILE_SPEED === Heb_Product_Publisher_Admin_Settings::translator_profile() ) {
+				return (bool) apply_filters( 'heb_pp_translator_enable_html_split', true );
+			}
+		}
 		$model   = strtolower( (string) Heb_Product_Publisher_Admin_Settings::openrouter_model() );
 		$default = ! preg_match( '/opus|sonnet|gpt-4|gpt-5|o1|o3|gemini.*pro|deepseek.*reason/i', $model );
 		return (bool) apply_filters( 'heb_pp_translator_enable_html_split', $default );

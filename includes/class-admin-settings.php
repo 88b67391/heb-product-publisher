@@ -15,6 +15,7 @@ class Heb_Product_Publisher_Admin_Settings {
 	const OPT_SOURCE_LOCALE    = 'heb_pp_source_locale';
 	const OPT_OPENROUTER_KEY   = 'heb_pp_openrouter_key';
 	const OPT_OPENROUTER_MODEL = 'heb_pp_openrouter_model';
+	const OPT_TRANSLATOR_PROFILE = 'heb_pp_translator_profile';
 	const OPT_REMOTE_SITES     = 'heb_pp_remote_sites';
 	const OPT_GITHUB_REPO      = 'heb_pp_github_repo';
 	const OPT_HREFLANG_ENABLED = 'heb_pp_hreflang_enabled';
@@ -26,6 +27,9 @@ class Heb_Product_Publisher_Admin_Settings {
 	const ROLE_AUTO     = 'auto';
 
 	const DEFAULT_MODEL              = 'openai/gpt-4o-mini';
+	const PROFILE_QUALITY            = 'quality';
+	const PROFILE_SPEED              = 'speed';
+	const DEFAULT_TRANSLATOR_PROFILE = self::PROFILE_QUALITY;
 	const DEFAULT_HREFLANG_XDEFAULT  = 'en';
 	const DEFAULT_SITE_ROLE          = self::ROLE_AUTO;
 
@@ -47,6 +51,7 @@ class Heb_Product_Publisher_Admin_Settings {
 		add_action( 'admin_menu', [ $this, 'add_menu' ], 10 );
 		add_action( 'admin_post_heb_pp_check_updates', [ $this, 'handle_check_updates' ] );
 		add_action( 'admin_bar_menu', [ $this, 'add_admin_bar_check_updates' ], 90 );
+		add_action( 'init', [ $this, 'apply_translator_profile' ], 1 );
 	}
 
 	/**
@@ -68,6 +73,71 @@ class Heb_Product_Publisher_Admin_Settings {
 	public static function openrouter_model() {
 		$v = get_option( self::OPT_OPENROUTER_MODEL, self::DEFAULT_MODEL );
 		return is_string( $v ) && '' !== $v ? $v : self::DEFAULT_MODEL;
+	}
+
+	/**
+	 * 翻译策略：quality = 整段翻译 + 失败不写入；speed = HTML 切片 + 更快模型。
+	 *
+	 * @return string quality|speed
+	 */
+	public static function translator_profile() {
+		$v = get_option( self::OPT_TRANSLATOR_PROFILE, self::DEFAULT_TRANSLATOR_PROFILE );
+		$v = is_string( $v ) ? strtolower( trim( $v ) ) : '';
+		if ( in_array( $v, [ self::PROFILE_QUALITY, self::PROFILE_SPEED ], true ) ) {
+			return $v;
+		}
+		return self::DEFAULT_TRANSLATOR_PROFILE;
+	}
+
+	/**
+	 * @return bool
+	 */
+	public static function is_quality_translator() {
+		return self::PROFILE_QUALITY === self::translator_profile();
+	}
+
+	/**
+	 * 质量优先：更长超时、更高 max_tokens、不预切片 HTML、全局 strict。
+	 *
+	 * @return void
+	 */
+	public function apply_translator_profile() {
+		if ( ! self::is_quality_translator() ) {
+			return;
+		}
+		add_filter(
+			'heb_pp_translator_http_timeout',
+			static function () {
+				return 600;
+			}
+		);
+		add_filter(
+			'heb_pp_translator_max_retries',
+			static function () {
+				return 3;
+			}
+		);
+		add_filter(
+			'heb_pp_translator_batch_char_limit',
+			static function () {
+				return 2000;
+			}
+		);
+		add_filter(
+			'heb_pp_translator_solo_char_limit',
+			static function () {
+				return 1600;
+			}
+		);
+		add_filter(
+			'heb_pp_translator_max_tokens',
+			static function ( $n, $len ) {
+				$est = (int) ceil( (int) $len * 2.8 / 3 );
+				return max( (int) $n, 16384, min( 32768, $est ) );
+			},
+			10,
+			2
+		);
 	}
 
 	/**
@@ -215,6 +285,15 @@ class Heb_Product_Publisher_Admin_Settings {
 		);
 		register_setting(
 			'heb_pp_settings',
+			self::OPT_TRANSLATOR_PROFILE,
+			[
+				'type'              => 'string',
+				'sanitize_callback' => [ $this, 'sanitize_translator_profile' ],
+				'default'           => self::DEFAULT_TRANSLATOR_PROFILE,
+			]
+		);
+		register_setting(
+			'heb_pp_settings',
 			self::OPT_REMOTE_SITES,
 			[ 'type' => 'array', 'sanitize_callback' => [ $this, 'sanitize_remote_sites' ], 'default' => [] ]
 		);
@@ -264,6 +343,18 @@ class Heb_Product_Publisher_Admin_Settings {
 			return $raw;
 		}
 		return self::DEFAULT_SITE_ROLE;
+	}
+
+	/**
+	 * @param mixed $raw Raw value.
+	 * @return string
+	 */
+	public function sanitize_translator_profile( $raw ) {
+		$raw = is_string( $raw ) ? strtolower( trim( $raw ) ) : '';
+		if ( in_array( $raw, [ self::PROFILE_QUALITY, self::PROFILE_SPEED ], true ) ) {
+			return $raw;
+		}
+		return self::DEFAULT_TRANSLATOR_PROFILE;
 	}
 
 	/**
@@ -456,6 +547,7 @@ class Heb_Product_Publisher_Admin_Settings {
 		$source_locale   = self::source_locale();
 		$or_key          = (string) get_option( self::OPT_OPENROUTER_KEY, '' );
 		$or_model        = self::openrouter_model();
+		$translator_profile = self::translator_profile();
 		$sites           = self::remote_sites();
 		$gh_repo         = (string) get_option( self::OPT_GITHUB_REPO, '' );
 		$gh_from_config  = defined( 'HEB_PP_GITHUB_REPO' ) && is_string( HEB_PP_GITHUB_REPO ) && '' !== HEB_PP_GITHUB_REPO;
@@ -604,6 +696,47 @@ class Heb_Product_Publisher_Admin_Settings {
 						</td>
 					</tr>
 					<tr>
+						<th scope="row"><?php esc_html_e( '翻译策略', 'heb-product-publisher' ); ?></th>
+						<td>
+							<fieldset>
+								<label style="display:block;margin-bottom:8px;">
+									<input
+										type="radio"
+										name="<?php echo esc_attr( self::OPT_TRANSLATOR_PROFILE ); ?>"
+										value="<?php echo esc_attr( self::PROFILE_QUALITY ); ?>"
+										<?php checked( $translator_profile, self::PROFILE_QUALITY ); ?>
+									/>
+									<strong><?php esc_html_e( '质量优先', 'heb-product-publisher' ); ?></strong>
+									<span class="description">
+										&middot;
+										<?php esc_html_e( '整段 Elementor 内容一次翻译；任一批次失败不写入子站；HTTP 超时 600s。推荐 Claude Opus 4.8。', 'heb-product-publisher' ); ?>
+									</span>
+								</label>
+								<label style="display:block;">
+									<input
+										type="radio"
+										name="<?php echo esc_attr( self::OPT_TRANSLATOR_PROFILE ); ?>"
+										value="<?php echo esc_attr( self::PROFILE_SPEED ); ?>"
+										<?php checked( $translator_profile, self::PROFILE_SPEED ); ?>
+									/>
+									<strong><?php esc_html_e( '速度优先', 'heb-product-publisher' ); ?></strong>
+									<span class="description">
+										&middot;
+										<?php esc_html_e( '长 HTML 自动切片；更快更省；适合日常单条分发。推荐 Gemini 2.5 Flash。', 'heb-product-publisher' ); ?>
+									</span>
+								</label>
+							</fieldset>
+							<p style="margin-top:10px;margin-bottom:0;">
+								<button type="button" class="button button-primary button-small heb-pp-profile-quick" data-profile="<?php echo esc_attr( self::PROFILE_QUALITY ); ?>" data-model="anthropic/claude-opus-4.8">
+									<?php esc_html_e( '一键：质量优先 + Opus 4.8', 'heb-product-publisher' ); ?>
+								</button>
+								<button type="button" class="button button-small heb-pp-profile-quick" data-profile="<?php echo esc_attr( self::PROFILE_SPEED ); ?>" data-model="google/gemini-2.5-flash">
+									<?php esc_html_e( '一键：速度优先 + Gemini Flash', 'heb-product-publisher' ); ?>
+								</button>
+							</p>
+						</td>
+					</tr>
+					<tr>
 						<th scope="row"><label for="heb_pp_openrouter_model"><?php esc_html_e( '默认翻译模型', 'heb-product-publisher' ); ?></label></th>
 						<td>
 							<input
@@ -621,10 +754,18 @@ class Heb_Product_Publisher_Admin_Settings {
 								<?php
 								$recommended = [
 									[
-										'id'    => 'google/gemini-2.5-flash',
-										'label' => 'Gemini 2.5 Flash',
-										'desc'  => __( '⚡ 速度极快·价格最低·B2B 翻译够用（推荐）', 'heb-product-publisher' ),
-										'tone'  => 'primary',
+										'id'      => 'anthropic/claude-opus-4.8',
+										'label'   => 'Claude Opus 4.8',
+										'desc'    => __( '质量优先 · 慢·贵·整段翻译（Bootstrap 推荐）', 'heb-product-publisher' ),
+										'tone'    => 'quality',
+										'profile' => self::PROFILE_QUALITY,
+									],
+									[
+										'id'      => 'google/gemini-2.5-flash',
+										'label'   => 'Gemini 2.5 Flash',
+										'desc'    => __( '速度优先 · 极快·便宜·日常分发', 'heb-product-publisher' ),
+										'tone'    => 'primary',
+										'profile' => self::PROFILE_SPEED,
 									],
 									[
 										'id'    => 'openai/gpt-4o-mini',
@@ -653,7 +794,7 @@ class Heb_Product_Publisher_Admin_Settings {
 									[
 										'id'    => 'anthropic/claude-sonnet-4.5',
 										'label' => 'Claude Sonnet 4.5',
-										'desc'  => __( '⚠ 慢·贵·质量顶级（用于品牌文案）', 'heb-product-publisher' ),
+										'desc'  => __( '慢·贵·质量高（Sonnet）', 'heb-product-publisher' ),
 										'tone'  => 'warn',
 									],
 								];
@@ -661,12 +802,17 @@ class Heb_Product_Publisher_Admin_Settings {
 									$btn_class = 'button button-small';
 									if ( 'primary' === $m['tone'] ) {
 										$btn_class = 'button button-primary button-small';
+									} elseif ( 'quality' === $m['tone'] ) {
+										$btn_class = 'button button-primary button-small';
 									}
 									?>
 									<button
 										type="button"
 										class="<?php echo esc_attr( $btn_class ); ?> heb-pp-model-quick"
 										data-model="<?php echo esc_attr( $m['id'] ); ?>"
+										<?php if ( ! empty( $m['profile'] ) ) : ?>
+											data-profile="<?php echo esc_attr( (string) $m['profile'] ); ?>"
+										<?php endif; ?>
 										title="<?php echo esc_attr( $m['desc'] ); ?>"
 										style="font-family:monospace;"
 									><?php echo esc_html( $m['label'] ); ?></button>
@@ -683,9 +829,27 @@ class Heb_Product_Publisher_Admin_Settings {
 							</p>
 							<script>
 							(function(){
+								function setProfile(profile) {
+									if (!profile) return;
+									document.querySelectorAll('input[name="<?php echo esc_js( self::OPT_TRANSLATOR_PROFILE ); ?>"]').forEach(function(r){
+										r.checked = (r.value === profile);
+									});
+								}
 								document.querySelectorAll('.heb-pp-model-quick').forEach(function(btn){
 									btn.addEventListener('click', function(e){
 										e.preventDefault();
+										var input = document.getElementById('heb_pp_openrouter_model');
+										if (input) {
+											input.value = btn.getAttribute('data-model');
+											input.focus();
+										}
+										setProfile(btn.getAttribute('data-profile'));
+									});
+								});
+								document.querySelectorAll('.heb-pp-profile-quick').forEach(function(btn){
+									btn.addEventListener('click', function(e){
+										e.preventDefault();
+										setProfile(btn.getAttribute('data-profile'));
 										var input = document.getElementById('heb_pp_openrouter_model');
 										if (input) {
 											input.value = btn.getAttribute('data-model');
