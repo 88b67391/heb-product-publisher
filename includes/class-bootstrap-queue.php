@@ -206,9 +206,28 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 	 * @return int
 	 */
 	public static function count_pending_actions( $job_id ) {
+		$snap = self::get_job_queue_snapshot( $job_id );
+		return (int) ( $snap['counts']['pending'] ?? 0 );
+	}
+
+	/**
+	 * Bootstrap job 在 Action Scheduler 中的队列快照（pending / in-progress / failed）。
+	 *
+	 * @param string $job_id Job id.
+	 * @return array{
+	 *   items: array<int,array{hook:string,status:string,action_id:int,object_type:string,object_id:int,label:string,scheduled_at:int}>,
+	 *   counts: array{pending:int,running:int,failed:int}
+	 * }
+	 */
+	public static function get_job_queue_snapshot( $job_id ) {
+		$out = [
+			'items'  => [],
+			'counts' => [ 'pending' => 0, 'running' => 0, 'failed' => 0 ],
+		];
 		if ( ! function_exists( 'as_get_scheduled_actions' ) ) {
-			return 0;
+			return $out;
 		}
+
 		$hooks = [
 			self::HOOK_TERM,
 			self::HOOK_POST,
@@ -216,14 +235,244 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			self::HOOK_SETTINGS,
 			self::HOOK_FINALIZE,
 		];
-		$total = 0;
-		foreach ( $hooks as $hook ) {
+		$status_map = [
+			\ActionScheduler_Store::STATUS_PENDING  => 'pending',
+			\ActionScheduler_Store::STATUS_RUNNING => 'running',
+			\ActionScheduler_Store::STATUS_FAILED  => 'failed',
+		];
+
+		foreach ( $status_map as $as_status => $bucket ) {
+			foreach ( $hooks as $hook ) {
+				$actions = as_get_scheduled_actions(
+					[
+						'hook'     => $hook,
+						'group'    => self::GROUP,
+						'status'   => $as_status,
+						'per_page' => 200,
+					],
+					'ids'
+				);
+				if ( empty( $actions ) ) {
+					continue;
+				}
+				foreach ( $actions as $action_id ) {
+					$action = function_exists( 'as_get_scheduled_action' ) ? as_get_scheduled_action( $action_id ) : null;
+					if ( ! $action || ! method_exists( $action, 'get_args' ) ) {
+						continue;
+					}
+					$args    = $action->get_args();
+					$payload = isset( $args[0] ) && is_array( $args[0] ) ? $args[0] : $args;
+					if ( ! isset( $payload['job_id'] ) || (string) $payload['job_id'] !== (string) $job_id ) {
+						continue;
+					}
+
+					$object_type = 'finalize';
+					$object_id   = 0;
+					if ( self::HOOK_POST === $hook && ! empty( $payload['post_id'] ) ) {
+						$object_type = 'post';
+						$object_id   = (int) $payload['post_id'];
+					} elseif ( self::HOOK_TERM === $hook && ! empty( $payload['term_id'] ) ) {
+						$object_type = 'term';
+						$object_id   = (int) $payload['term_id'];
+					} elseif ( self::HOOK_MENU === $hook && ! empty( $payload['menu_id'] ) ) {
+						$object_type = 'menu';
+						$object_id   = (int) $payload['menu_id'];
+					} elseif ( self::HOOK_SETTINGS === $hook ) {
+						$object_type = 'settings';
+					}
+
+					$label = '';
+					if ( 'post' === $object_type && $object_id > 0 ) {
+						$label = get_the_title( $object_id );
+					} elseif ( 'term' === $object_type && $object_id > 0 ) {
+						$t = get_term( $object_id );
+						$label = ( $t && ! is_wp_error( $t ) ) ? (string) $t->name : '';
+					}
+
+					$scheduled_at = 0;
+					if ( method_exists( $action, 'get_schedule' ) && $action->get_schedule() && method_exists( $action->get_schedule(), 'get_date' ) ) {
+						$date = $action->get_schedule()->get_date();
+						if ( $date && method_exists( $date, 'getTimestamp' ) ) {
+							$scheduled_at = (int) $date->getTimestamp();
+						}
+					}
+
+					$out['items'][] = [
+						'hook'         => (string) $hook,
+						'status'       => (string) $bucket,
+						'action_id'    => (int) $action_id,
+						'object_type'  => $object_type,
+						'object_id'    => $object_id,
+						'label'        => $label,
+						'scheduled_at' => $scheduled_at,
+					];
+					++$out['counts'][ $bucket ];
+				}
+			}
+		}
+
+		return $out;
+	}
+
+	/**
+	 * 阶段仍有剩余项，但 AS 中已无 pending/running 时，补排遗漏的 post/term 任务。
+	 *
+	 * @param string $job_id Job id.
+	 * @return int 新补排的任务数。
+	 */
+	public static function rescue_stalled_stage( $job_id ) {
+		$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+		if ( ! $rec || ! in_array( $rec['status'] ?? '', [ Heb_Product_Publisher_Bootstrap_Status::STATUS_QUEUED, Heb_Product_Publisher_Bootstrap_Status::STATUS_RUNNING ], true ) ) {
+			return 0;
+		}
+
+		$stage = (string) ( $rec['current_stage'] ?? '' );
+		$prog  = isset( $rec['progress'][ $stage ] ) && is_array( $rec['progress'][ $stage ] ) ? $rec['progress'][ $stage ] : [];
+		$remaining = max(
+			0,
+			(int) ( $prog['queued'] ?? 0 ) - (int) ( $prog['done'] ?? 0 ) - (int) ( $prog['failed'] ?? 0 ) - (int) ( $prog['skipped'] ?? 0 )
+		);
+		if ( $remaining <= 0 ) {
+			return 0;
+		}
+
+		$snap = self::get_job_queue_snapshot( $job_id );
+		if ( (int) ( $snap['counts']['pending'] ?? 0 ) > 0 || (int) ( $snap['counts']['running'] ?? 0 ) > 0 ) {
+			return 0;
+		}
+
+		$rescued = 0;
+		if ( Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS === $stage ) {
+			$expected  = self::collect_distributable_post_ids();
+			$as_ids    = self::get_job_object_ids_from_as( $job_id, self::HOOK_POST, 'post_id' );
+			$log_ids   = self::get_accounted_ids_from_log( $rec, 'post' );
+			$error_ids = self::get_error_source_ids( $rec, 'post' );
+			$accounted = array_unique( array_merge( $as_ids, $log_ids, $error_ids ) );
+			$missing   = array_values( array_diff( $expected, $accounted ) );
+			foreach ( $missing as $post_id ) {
+				self::schedule_bootstrap_action(
+					self::HOOK_POST,
+					[
+						'job_id'  => $job_id,
+						'post_id' => (int) $post_id,
+					]
+				);
+				$rescued++;
+			}
+			if ( $rescued > 0 ) {
+				Heb_Product_Publisher_Bootstrap_Status::add_log(
+					$job_id,
+					'warning',
+					sprintf(
+						/* translators: 1: count, 2: post ids */
+						__( '队列停滞：已补排 %1$d 个遗漏 post（%2$s）', 'heb-product-publisher' ),
+						$rescued,
+						'#' . implode( ', #', array_map( 'strval', $missing ) )
+					)
+				);
+			}
+		} elseif ( Heb_Product_Publisher_Bootstrap_Status::STAGE_TERMS === $stage ) {
+			$expected  = self::collect_distributable_term_ids();
+			$as_ids    = self::get_job_object_ids_from_as( $job_id, self::HOOK_TERM, 'term_id' );
+			$log_ids   = self::get_accounted_ids_from_log( $rec, 'term' );
+			$error_ids = self::get_error_source_ids( $rec, 'term' );
+			$accounted = array_unique( array_merge( $as_ids, $log_ids, $error_ids ) );
+			$missing   = array_values( array_diff( $expected, $accounted ) );
+			foreach ( $missing as $term_id ) {
+				self::schedule_bootstrap_action(
+					self::HOOK_TERM,
+					[
+						'job_id'  => $job_id,
+						'term_id' => (int) $term_id,
+					]
+				);
+				$rescued++;
+			}
+			if ( $rescued > 0 ) {
+				Heb_Product_Publisher_Bootstrap_Status::add_log(
+					$job_id,
+					'warning',
+					sprintf(
+						/* translators: 1: count, 2: term ids */
+						__( '队列停滞：已补排 %1$d 个遗漏 term（%2$s）', 'heb-product-publisher' ),
+						$rescued,
+						'#' . implode( ', #', array_map( 'strval', $missing ) )
+					)
+				);
+			}
+		}
+
+		return $rescued;
+	}
+
+	/**
+	 * @return array<int,int>
+	 */
+	private static function collect_distributable_post_ids() {
+		$ids = [];
+		foreach ( heb_pp_distributable_post_types() as $pt ) {
+			$post_ids = get_posts(
+				[
+					'post_type'      => $pt,
+					'post_status'    => 'publish',
+					'posts_per_page' => -1,
+					'fields'         => 'ids',
+					'orderby'        => 'parent date',
+					'order'          => 'ASC',
+				]
+			);
+			if ( ! empty( $post_ids ) ) {
+				$ids = array_merge( $ids, array_map( 'intval', $post_ids ) );
+			}
+		}
+		return array_values( array_unique( $ids ) );
+	}
+
+	/**
+	 * @return array<int,int>
+	 */
+	private static function collect_distributable_term_ids() {
+		$ids = [];
+		foreach ( heb_pp_distributable_taxonomies() as $tx ) {
+			$terms = get_terms(
+				[
+					'taxonomy'   => $tx,
+					'hide_empty' => false,
+					'fields'     => 'ids',
+				]
+			);
+			if ( ! is_wp_error( $terms ) && ! empty( $terms ) ) {
+				$ids = array_merge( $ids, array_map( 'intval', $terms ) );
+			}
+		}
+		return array_values( array_unique( $ids ) );
+	}
+
+	/**
+	 * @param string $job_id   Job id.
+	 * @param string $hook     AS hook.
+	 * @param string $id_field Payload id key.
+	 * @return array<int,int>
+	 */
+	private static function get_job_object_ids_from_as( $job_id, $hook, $id_field ) {
+		$ids = [];
+		if ( ! function_exists( 'as_get_scheduled_actions' ) ) {
+			return $ids;
+		}
+		$statuses = [
+			\ActionScheduler_Store::STATUS_PENDING,
+			\ActionScheduler_Store::STATUS_RUNNING,
+			\ActionScheduler_Store::STATUS_FAILED,
+			\ActionScheduler_Store::STATUS_COMPLETE,
+			\ActionScheduler_Store::STATUS_CANCELED,
+		];
+		foreach ( $statuses as $as_status ) {
 			$actions = as_get_scheduled_actions(
 				[
 					'hook'     => $hook,
 					'group'    => self::GROUP,
-					'status'   => \ActionScheduler_Store::STATUS_PENDING,
-					'per_page' => 200,
+					'status'   => $as_status,
+					'per_page' => 500,
 				],
 				'ids'
 			);
@@ -237,12 +486,50 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 				}
 				$args    = $action->get_args();
 				$payload = isset( $args[0] ) && is_array( $args[0] ) ? $args[0] : $args;
-				if ( isset( $payload['job_id'] ) && (string) $payload['job_id'] === (string) $job_id ) {
-					$total++;
+				if ( ! isset( $payload['job_id'] ) || (string) $payload['job_id'] !== (string) $job_id ) {
+					continue;
+				}
+				if ( ! empty( $payload[ $id_field ] ) ) {
+					$ids[] = (int) $payload[ $id_field ];
 				}
 			}
 		}
-		return $total;
+		return array_values( array_unique( $ids ) );
+	}
+
+	/**
+	 * @param array<string,mixed> $rec  Job record.
+	 * @param string              $type Object type.
+	 * @return array<int,int>
+	 */
+	private static function get_accounted_ids_from_log( array $rec, $type ) {
+		$ids  = [];
+		$type = preg_quote( (string) $type, '/' );
+		foreach ( $rec['log'] ?? [] as $entry ) {
+			$msg = isset( $entry['msg'] ) ? (string) $entry['msg'] : '';
+			if ( '' === $msg ) {
+				continue;
+			}
+			if ( preg_match( '/^' . $type . ' #(\d+).*(?:完成|失败|跳过)/u', $msg, $m ) ) {
+				$ids[] = (int) $m[1];
+			}
+		}
+		return array_values( array_unique( $ids ) );
+	}
+
+	/**
+	 * @param array<string,mixed> $rec  Job record.
+	 * @param string              $type Object type.
+	 * @return array<int,int>
+	 */
+	private static function get_error_source_ids( array $rec, $type ) {
+		$ids = [];
+		foreach ( $rec['errors'] ?? [] as $err ) {
+			if ( ( $err['type'] ?? '' ) === $type && ! empty( $err['source_id'] ) ) {
+				$ids[] = (int) $err['source_id'];
+			}
+		}
+		return array_values( array_unique( $ids ) );
 	}
 
 	/**
@@ -250,9 +537,12 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 	 *
 	 * @return int 本次处理的 action 数量（估算）。
 	 */
-	public static function nudge_queue_runner() {
+	public static function nudge_queue_runner( $job_id = '' ) {
 		self::register_long_action_filters();
 		Heb_Product_Publisher_Runtime::raise();
+		if ( '' !== (string) $job_id ) {
+			self::rescue_stalled_stage( (string) $job_id );
+		}
 		if ( class_exists( 'ActionScheduler_QueueRunner' ) ) {
 			$runner = \ActionScheduler_QueueRunner::instance();
 			if ( method_exists( $runner, 'run' ) ) {

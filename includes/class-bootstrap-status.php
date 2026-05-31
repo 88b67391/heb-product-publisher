@@ -232,20 +232,33 @@ class Heb_Product_Publisher_Bootstrap_Status {
 		$failed  = (int) ( $prog['failed'] ?? 0 );
 		$skipped = (int) ( $prog['skipped'] ?? 0 );
 		$finished_in_stage = $done + $failed + $skipped;
+		$remaining         = max( 0, $queued - $finished_in_stage );
+		$queue_snap        = class_exists( 'Heb_Product_Publisher_Bootstrap_Queue', false )
+			? Heb_Product_Publisher_Bootstrap_Queue::get_job_queue_snapshot( (string) ( $rec['id'] ?? '' ) )
+			: [ 'items' => [], 'counts' => [ 'pending' => 0, 'running' => 0, 'failed' => 0 ] ];
 
 		$rec['activity'] = [
 			'stage_pct'       => $queued > 0 ? (int) round( 100 * $finished_in_stage / $queued ) : 0,
 			'stage_finished'  => $finished_in_stage,
 			'stage_queued'    => $queued,
+			'stage_remaining' => $remaining,
 			'idle_seconds'    => $updated > 0 ? max( 0, $now - $updated ) : 0,
 			'stale'           => in_array( $rec['status'] ?? '', [ self::STATUS_QUEUED, self::STATUS_RUNNING ], true )
 				&& $updated > 0
 				&& ( $now - $updated ) >= $stale_after,
 			'stale_after'     => $stale_after,
-			'pending_actions' => class_exists( 'Heb_Product_Publisher_Bootstrap_Queue', false )
-				? Heb_Product_Publisher_Bootstrap_Queue::count_pending_actions( (string) ( $rec['id'] ?? '' ) )
-				: 0,
+			'pending_actions' => (int) ( $queue_snap['counts']['pending'] ?? 0 ),
+			'running_actions' => (int) ( $queue_snap['counts']['running'] ?? 0 ),
+			'failed_actions'  => (int) ( $queue_snap['counts']['failed'] ?? 0 ),
+			'queue_items'     => $queue_snap['items'],
 		];
+
+		$idle_seconds = $updated > 0 ? max( 0, $now - $updated ) : 0;
+		$rec['activity']['idle_seconds']          = $idle_seconds;
+		$rec['activity']['queue_stalled']         = $remaining > 0
+			&& (int) ( $queue_snap['counts']['pending'] ?? 0 ) === 0
+			&& (int) ( $queue_snap['counts']['running'] ?? 0 ) === 0
+			&& $idle_seconds >= 120;
 
 		$cur = isset( $rec['current_item'] ) && is_array( $rec['current_item'] ) ? $rec['current_item'] : null;
 		if ( $cur && ! empty( $cur['started_at'] ) ) {

@@ -195,8 +195,18 @@
 			var pct = act.stage_pct || 0;
 			html += '<div class="heb-pp-bs-progress-bar-wrap"><div class="heb-pp-bs-progress-bar" style="width:' + pct + '%;"></div></div>';
 			html += '<p style="margin:6px 0;"><strong>' + pct + '%</strong> · stage <code>' + escapeHtml(job.current_stage) + '</code>';
-			if (act.pending_actions) {
-				html += ' · AS 待处理 <strong>' + act.pending_actions + '</strong>';
+			if (act.stage_remaining) {
+				html += ' · ' + escapeHtml(HebPPBootstrap.i18n.stageRemaining) + ' <strong>' + act.stage_remaining + '</strong>';
+			}
+			if (act.pending_actions || act.running_actions || act.failed_actions) {
+				html += ' · ' + escapeHtml(HebPPBootstrap.i18n.queuePending) + ' <strong>' + (act.pending_actions || 0) + '</strong>';
+				html += ' · ' + escapeHtml(HebPPBootstrap.i18n.queueRunning) + ' <strong>' + (act.running_actions || 0) + '</strong>';
+				if (act.failed_actions) {
+					html += ' · ' + escapeHtml(HebPPBootstrap.i18n.queueFailed) + ' <strong style="color:#a00;">' + act.failed_actions + '</strong>';
+				}
+			}
+			if (act.idle_seconds && !jobFinished(job)) {
+				html += ' · 空闲 ' + fmtDuration(act.idle_seconds);
 			}
 			html += '</p>';
 
@@ -213,7 +223,25 @@
 				html += '</p>';
 			}
 
-			if (act.stale) {
+			if (act.queue_items && act.queue_items.length) {
+				html += '<h4 style="margin:10px 0 6px;font-size:13px;">' + escapeHtml(HebPPBootstrap.i18n.queueItemsTitle) + '</h4>';
+				html += '<table class="widefat" style="max-width:700px;font-size:12px;"><thead><tr><th>状态</th><th>类型</th><th>ID</th><th>标题</th></tr></thead><tbody>';
+				act.queue_items.slice(0, 20).forEach(function (item) {
+					var statusColor = item.status === 'failed' ? '#a00' : (item.status === 'running' ? '#07c' : '#666');
+					html += '<tr><td style="color:' + statusColor + ';">' + escapeHtml(item.status) + '</td>';
+					html += '<td><code>' + escapeHtml(item.object_type) + '</code></td>';
+					html += '<td>' + (item.object_id || '-') + '</td>';
+					html += '<td>' + escapeHtml(item.label || '') + '</td></tr>';
+				});
+				html += '</tbody></table>';
+			}
+
+			if (act.queue_stalled) {
+				html += '<div class="notice notice-warning inline" style="margin:10px 0;padding:8px 12px;">';
+				html += '<p style="margin:0;">' + escapeHtml(HebPPBootstrap.i18n.queueStalledHint) + '</p>';
+				html += '<p style="margin:8px 0 0;"><button type="button" class="button button-small heb-pp-bs-nudge" data-job-id="' + escapeHtml(job.id) + '">' + escapeHtml(HebPPBootstrap.i18n.nudge) + '</button></p>';
+				html += '</div>';
+			} else if (act.stale) {
 				html += '<div class="notice notice-warning inline" style="margin:10px 0;padding:8px 12px;">';
 				html += '<p style="margin:0;">' + escapeHtml(HebPPBootstrap.i18n.staleHint) + '</p>';
 				html += '<p style="margin:8px 0 0;"><button type="button" class="button button-small heb-pp-bs-nudge" data-job-id="' + escapeHtml(job.id) + '">' + escapeHtml(HebPPBootstrap.i18n.nudge) + '</button></p>';

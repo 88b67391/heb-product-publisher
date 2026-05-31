@@ -417,23 +417,45 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 
 		$enriched = Heb_Product_Publisher_Bootstrap_Status::enrich( $rec );
 		$activity = isset( $enriched['activity'] ) && is_array( $enriched['activity'] ) ? $enriched['activity'] : [];
-		if ( empty( $activity['stale'] ) ) {
+		$stalled  = ! empty( $activity['queue_stalled'] );
+		$stale    = ! empty( $activity['stale'] );
+		if ( ! $stalled && ! $stale ) {
 			return;
 		}
 
 		$pending = (int) ( $activity['pending_actions'] ?? 0 );
+		$running = (int) ( $activity['running_actions'] ?? 0 );
+		$failed  = (int) ( $activity['failed_actions'] ?? 0 );
 		$idle    = (int) ( $activity['idle_seconds'] ?? 0 );
-		Heb_Product_Publisher_Bootstrap_Status::add_log(
-			$job_id,
-			'warning',
-			sprintf(
-				/* translators: 1: idle seconds, 2: pending AS actions */
-				__( '已 %1$d 秒无进度更新（Opus 单条可跑 10–20 分钟属正常）；队列待处理 %2$d 项，正在尝试推进…', 'heb-product-publisher' ),
-				$idle,
-				$pending
-			)
-		);
-		Heb_Product_Publisher_Bootstrap_Queue::nudge_queue_runner();
+		$remain  = (int) ( $activity['stage_remaining'] ?? 0 );
+
+		if ( $stalled ) {
+			Heb_Product_Publisher_Bootstrap_Status::add_log(
+				$job_id,
+				'warning',
+				sprintf(
+					/* translators: 1: remaining count, 2: idle seconds, 3: failed AS count */
+					__( '队列停滞：本阶段还剩 %1$d 项，但 Action Scheduler 无待处理/运行中任务（已空闲 %2$d 秒；AS 失败 %3$d 项）。正在补排并推进…', 'heb-product-publisher' ),
+					$remain,
+					$idle,
+					$failed
+				)
+			);
+			Heb_Product_Publisher_Bootstrap_Queue::rescue_stalled_stage( $job_id );
+		} elseif ( $stale ) {
+			Heb_Product_Publisher_Bootstrap_Status::add_log(
+				$job_id,
+				'warning',
+				sprintf(
+					/* translators: 1: idle seconds, 2: pending AS actions, 3: running AS actions */
+					__( '已 %1$d 秒无进度更新（Opus 单条可跑 10–20 分钟属正常）；队列待处理 %2$d 项、运行中 %3$d 项，正在尝试推进…', 'heb-product-publisher' ),
+					$idle,
+					$pending,
+					$running
+				)
+			);
+		}
+		Heb_Product_Publisher_Bootstrap_Queue::nudge_queue_runner( $job_id );
 	}
 
 	/**

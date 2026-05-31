@@ -81,6 +81,12 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 					'selectSite'    => __( '请选择目标站点。', 'heb-product-publisher' ),
 					'processing'    => __( '正在处理', 'heb-product-publisher' ),
 					'staleHint'     => __( '长时间无更新：Opus 单条可跑 10–20 分钟；若超过 20 分钟仍无进度可点「推进队列」。', 'heb-product-publisher' ),
+					'queueStalledHint' => __( '队列停滞：本阶段还有未完成项，但 Action Scheduler 里没有待处理任务。可能是 WP-Cron 未触发或任务丢失；点「推进队列」会自动补排遗漏项。', 'heb-product-publisher' ),
+					'stageRemaining'   => __( '本阶段剩余', 'heb-product-publisher' ),
+					'queuePending'     => __( 'AS 待处理', 'heb-product-publisher' ),
+					'queueRunning'     => __( 'AS 运行中', 'heb-product-publisher' ),
+					'queueFailed'      => __( 'AS 失败', 'heb-product-publisher' ),
+					'queueItemsTitle'  => __( 'Action Scheduler 队列', 'heb-product-publisher' ),
 					'nudge'         => __( '推进队列', 'heb-product-publisher' ),
 					'nudging'       => __( '推进中…', 'heb-product-publisher' ),
 					'nudgeDone'     => __( '已触发 Action Scheduler，请稍候刷新进度。', 'heb-product-publisher' ),
@@ -403,7 +409,7 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 			}
 			Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, 'info', __( '用户手动推进 Action Scheduler 队列…', 'heb-product-publisher' ) );
 		}
-		$ran = Heb_Product_Publisher_Bootstrap_Queue::nudge_queue_runner();
+		$ran = Heb_Product_Publisher_Bootstrap_Queue::nudge_queue_runner( $job_id );
 		wp_send_json_success(
 			[
 				'processed' => $ran,
