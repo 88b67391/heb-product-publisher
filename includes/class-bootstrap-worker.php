@@ -130,6 +130,9 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			return;
 		}
 		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_TERMS;
+		if ( ! $this->job_in_stage( $job_id, $stage ) ) {
+			return;
+		}
 		self::$in_bootstrap_item = true;
 		$t0    = 0.0;
 		try {
@@ -182,6 +185,10 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			return;
 		}
 		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS;
+		if ( ! $this->job_in_stage( $job_id, $stage ) ) {
+			$this->skip_stale_stage_action( $job_id, 'post', $post_id );
+			return;
+		}
 		self::$in_bootstrap_item = true;
 		$t0    = 0.0;
 		try {
@@ -235,6 +242,9 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			return;
 		}
 		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_MENUS;
+		if ( ! $this->job_in_stage( $job_id, $stage ) ) {
+			return;
+		}
 		self::$in_bootstrap_item = true;
 		try {
 			$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
@@ -284,13 +294,18 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			return;
 		}
 		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_SETTINGS;
+		if ( ! $this->job_in_stage( $job_id, $stage ) ) {
+			return;
+		}
 		self::$in_bootstrap_item = true;
+		$t0 = 0.0;
 		try {
 			$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
 			$site = Heb_Product_Publisher_Admin_Settings::get_site( (string) $rec['site_id'] );
 			if ( ! $site ) {
 				throw new \RuntimeException( 'site config missing' );
 			}
+			$t0 = $this->begin_item( $job_id, 'settings', 0, __( 'WordPress 全局设置', 'heb-product-publisher' ) );
 			$payload    = Heb_Product_Publisher_Settings_Sync::build_payload();
 			$translator = new Heb_Product_Publisher_Translator();
 			$settings   = new Heb_Product_Publisher_Settings_Sync();
@@ -298,13 +313,17 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			if ( empty( $res['ok'] ) ) {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 				Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'settings', 0, isset( $res['message'] ) ? (string) $res['message'] : 'unknown' );
+				$this->finish_item( $job_id, 'settings', 0, $t0, false );
 			} else {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'done' );
-				Heb_Product_Publisher_Bootstrap_Status::add_log(
+				$this->finish_item(
 					$job_id,
-					'info',
+					'settings',
+					0,
+					$t0,
+					true,
 					sprintf(
-						__( 'Settings applied: %1$d, skipped: %2$d', 'heb-product-publisher' ),
+						__( '✓ 完成（applied %1$d, skipped %2$d）', 'heb-product-publisher' ),
 						count( (array) ( $res['applied'] ?? [] ) ),
 						count( (array) ( $res['skipped'] ?? [] ) )
 					)
@@ -313,6 +332,7 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		} catch ( \Throwable $e ) {
 			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 			Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'settings', 0, $e->getMessage() );
+			$this->finish_item( $job_id, 'settings', 0, $t0, false );
 		} finally {
 			self::$in_bootstrap_item = false;
 		}
@@ -534,6 +554,42 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			);
 		}
 		Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, $ok ? 'info' : 'warning', $msg );
+	}
+
+	/**
+	 * @param string $job_id Job id.
+	 * @param string $stage  Expected stage.
+	 * @return bool
+	 */
+	private function job_in_stage( $job_id, $stage ) {
+		$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+		return $rec && (string) ( $rec['current_stage'] ?? '' ) === (string) $stage;
+	}
+
+	/**
+	 * @param string $job_id    Job id.
+	 * @param string $type      Object type.
+	 * @param int    $source_id Source id.
+	 * @return void
+	 */
+	private function skip_stale_stage_action( $job_id, $type, $source_id ) {
+		$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+		$cur = isset( $rec['current_stage'] ) ? (string) $rec['current_stage'] : '?';
+		Heb_Product_Publisher_Bootstrap_Status::add_log(
+			$job_id,
+			'info',
+			sprintf(
+				/* translators: 1: type, 2: id, 3: current stage */
+				__( '忽略过期 %1$s #%2$d 任务（当前阶段：%3$s）', 'heb-product-publisher' ),
+				$type,
+				$source_id,
+				$cur
+			)
+		);
+		$cur_item = isset( $rec['current_item'] ) && is_array( $rec['current_item'] ) ? $rec['current_item'] : null;
+		if ( $cur_item && (string) ( $cur_item['type'] ?? '' ) === $type && (int) ( $cur_item['source_id'] ?? 0 ) === (int) $source_id ) {
+			Heb_Product_Publisher_Bootstrap_Status::clear_current_item( $job_id );
+		}
 	}
 
 	/**

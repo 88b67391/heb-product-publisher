@@ -234,7 +234,7 @@ class Heb_Product_Publisher_Bootstrap_Status {
 		$finished_in_stage = $done + $failed + $skipped;
 		$remaining         = max( 0, $queued - $finished_in_stage );
 		$queue_snap        = class_exists( 'Heb_Product_Publisher_Bootstrap_Queue', false )
-			? Heb_Product_Publisher_Bootstrap_Queue::get_job_queue_snapshot( (string) ( $rec['id'] ?? '' ) )
+			? Heb_Product_Publisher_Bootstrap_Queue::get_stage_queue_snapshot( (string) ( $rec['id'] ?? '' ), $stage )
 			: [ 'items' => [], 'counts' => [ 'pending' => 0, 'running' => 0, 'failed' => 0 ] ];
 
 		$rec['activity'] = [

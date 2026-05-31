@@ -315,6 +315,91 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 	}
 
 	/**
+	 * 当前 stage 相关的 AS 队列快照（不含已过期阶段的 hook）。
+	 *
+	 * @param string $job_id Job id.
+	 * @param string $stage  Stage key.
+	 * @return array{items:array<int,array<string,mixed>>,counts:array{pending:int,running:int,failed:int}}
+	 */
+	public static function get_stage_queue_snapshot( $job_id, $stage ) {
+		$all   = self::get_job_queue_snapshot( $job_id );
+		$hooks = self::hooks_for_stage( (string) $stage );
+		if ( empty( $hooks ) ) {
+			return $all;
+		}
+		$items  = [];
+		$counts = [ 'pending' => 0, 'running' => 0, 'failed' => 0 ];
+		foreach ( $all['items'] as $item ) {
+			if ( ! in_array( (string) ( $item['hook'] ?? '' ), $hooks, true ) ) {
+				continue;
+			}
+			$items[] = $item;
+			$bucket  = (string) ( $item['status'] ?? '' );
+			if ( isset( $counts[ $bucket ] ) ) {
+				++$counts[ $bucket ];
+			}
+		}
+		return [
+			'items'  => $items,
+			'counts' => $counts,
+		];
+	}
+
+	/**
+	 * @param string $stage Stage key.
+	 * @return array<int,string>
+	 */
+	private static function hooks_for_stage( $stage ) {
+		$map = [
+			Heb_Product_Publisher_Bootstrap_Status::STAGE_TERMS    => [ self::HOOK_TERM ],
+			Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS    => [ self::HOOK_POST ],
+			Heb_Product_Publisher_Bootstrap_Status::STAGE_SETTINGS => [ self::HOOK_SETTINGS ],
+			Heb_Product_Publisher_Bootstrap_Status::STAGE_MENUS    => [ self::HOOK_MENU ],
+		];
+		return $map[ $stage ] ?? [];
+	}
+
+	/**
+	 * 撤销指定 job 在某 hook 下仍 pending 的 AS 动作。
+	 *
+	 * @param string $job_id Job id.
+	 * @param string $hook   Hook name.
+	 * @return int 取消数量。
+	 */
+	public static function cancel_job_hook_actions( $job_id, $hook ) {
+		if ( ! function_exists( 'as_get_scheduled_actions' ) || ! function_exists( 'as_unschedule_action' ) ) {
+			return 0;
+		}
+		$cancelled = 0;
+		$actions   = as_get_scheduled_actions(
+			[
+				'hook'     => $hook,
+				'group'    => self::GROUP,
+				'status'   => \ActionScheduler_Store::STATUS_PENDING,
+				'per_page' => 500,
+			],
+			'ids'
+		);
+		if ( empty( $actions ) ) {
+			return 0;
+		}
+		foreach ( $actions as $action_id ) {
+			$action = function_exists( 'as_get_scheduled_action' ) ? as_get_scheduled_action( $action_id ) : null;
+			if ( ! $action || ! method_exists( $action, 'get_args' ) ) {
+				continue;
+			}
+			$args    = $action->get_args();
+			$payload = isset( $args[0] ) && is_array( $args[0] ) ? $args[0] : $args;
+			if ( ! isset( $payload['job_id'] ) || (string) $payload['job_id'] !== (string) $job_id ) {
+				continue;
+			}
+			as_unschedule_action( $hook, $args, self::GROUP );
+			$cancelled++;
+		}
+		return $cancelled;
+	}
+
+	/**
 	 * 阶段仍有剩余项，但 AS 中已无 pending/running 时，补排遗漏的 post/term 任务。
 	 *
 	 * @param string $job_id Job id.
@@ -336,7 +421,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			return 0;
 		}
 
-		$snap = self::get_job_queue_snapshot( $job_id );
+		$snap = self::get_stage_queue_snapshot( $job_id, $stage );
 		if ( (int) ( $snap['counts']['pending'] ?? 0 ) > 0 || (int) ( $snap['counts']['running'] ?? 0 ) > 0 ) {
 			return 0;
 		}
@@ -345,6 +430,9 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 		if ( Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS === $stage ) {
 			$missing = self::find_missing_stage_objects( $rec, $job_id, self::HOOK_POST, 'post', 'post_id', self::collect_distributable_post_ids(), $remaining );
 			foreach ( $missing as $post_id ) {
+				if ( in_array( (int) $post_id, self::get_job_inflight_object_ids( $job_id, self::HOOK_POST, 'post_id' ), true ) ) {
+					continue;
+				}
 				self::schedule_bootstrap_action(
 					self::HOOK_POST,
 					[
@@ -369,6 +457,9 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 		} elseif ( Heb_Product_Publisher_Bootstrap_Status::STAGE_TERMS === $stage ) {
 			$missing = self::find_missing_stage_objects( $rec, $job_id, self::HOOK_TERM, 'term', 'term_id', self::collect_distributable_term_ids(), $remaining );
 			foreach ( $missing as $term_id ) {
+				if ( in_array( (int) $term_id, self::get_job_inflight_object_ids( $job_id, self::HOOK_TERM, 'term_id' ), true ) ) {
+					continue;
+				}
 				self::schedule_bootstrap_action(
 					self::HOOK_TERM,
 					[
@@ -390,6 +481,14 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 					)
 				);
 			}
+		} elseif ( Heb_Product_Publisher_Bootstrap_Status::STAGE_SETTINGS === $stage ) {
+			as_enqueue_async_action( self::HOOK_SETTINGS, [ [ 'job_id' => $job_id ] ], self::GROUP );
+			$rescued = 1;
+			Heb_Product_Publisher_Bootstrap_Status::add_log(
+				$job_id,
+				'warning',
+				__( '队列停滞：已补排 settings 任务', 'heb-product-publisher' )
+			);
 		}
 
 		if ( $rescued > 0 ) {
@@ -817,6 +916,24 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 					]
 				);
 				Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, 'info', sprintf( '→ stage: %s', $next ) );
+
+				if ( Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS === $current ) {
+					$cancelled = self::cancel_job_hook_actions( $job_id, self::HOOK_POST );
+					if ( $cancelled > 0 ) {
+						Heb_Product_Publisher_Bootstrap_Status::add_log(
+							$job_id,
+							'info',
+							sprintf(
+								/* translators: %d: count */
+								__( '已取消 %d 个过期的 post 队列任务', 'heb-product-publisher' ),
+								$cancelled
+							)
+						);
+					}
+					Heb_Product_Publisher_Bootstrap_Status::clear_current_item( $job_id );
+				} elseif ( Heb_Product_Publisher_Bootstrap_Status::STAGE_TERMS === $current ) {
+					self::cancel_job_hook_actions( $job_id, self::HOOK_TERM );
+				}
 
 				self::dispatch_stage( $job_id, $next );
 			}
