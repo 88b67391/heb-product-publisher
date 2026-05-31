@@ -24,16 +24,22 @@
 			$startBtn.prop('disabled', true);
 			$startMsg.text(HebPPBootstrap.i18n.starting);
 
-			$.post(HebPPBootstrap.ajaxUrl, {
-				action: 'heb_pp_bs_start',
-				nonce: HebPPBootstrap.nonce,
-				site_id: siteId,
-				scope_terms: $('#heb-pp-bs-scope-terms').is(':checked') ? 1 : 0,
-				scope_posts: $('#heb-pp-bs-scope-posts').is(':checked') ? 1 : 0,
-				scope_menus: $('#heb-pp-bs-scope-menus').is(':checked') ? 1 : 0,
-				scope_settings: $('#heb-pp-bs-scope-settings').is(':checked') ? 1 : 0,
-				scope_menu_locations: $('#heb-pp-bs-scope-menu-locations').is(':checked') ? 1 : 0,
-				dry_run: dryRun ? 1 : 0
+			$.ajax({
+				url: HebPPBootstrap.ajaxUrl,
+				type: 'POST',
+				dataType: 'json',
+				timeout: 60000,
+				data: {
+					action: 'heb_pp_bs_start',
+					nonce: HebPPBootstrap.nonce,
+					site_id: siteId,
+					scope_terms: $('#heb-pp-bs-scope-terms').is(':checked') ? 1 : 0,
+					scope_posts: $('#heb-pp-bs-scope-posts').is(':checked') ? 1 : 0,
+					scope_menus: $('#heb-pp-bs-scope-menus').is(':checked') ? 1 : 0,
+					scope_settings: $('#heb-pp-bs-scope-settings').is(':checked') ? 1 : 0,
+					scope_menu_locations: $('#heb-pp-bs-scope-menu-locations').is(':checked') ? 1 : 0,
+					dry_run: dryRun ? 1 : 0
+				}
 			}).done(function (res) {
 				if (res && res.success) {
 					$startMsg.html('<span style="color:#080;">Job created: <code>' + res.data.job_id.substring(0, 8) + '</code></span>');
@@ -41,8 +47,12 @@
 				} else {
 					$startMsg.html('<span style="color:#a00;">' + ((res && res.data && res.data.message) || 'Error') + '</span>');
 				}
-			}).fail(function (xhr) {
-				$startMsg.html('<span style="color:#a00;">' + (xhr.statusText || 'Error') + '</span>');
+			}).fail(function (xhr, status) {
+				var msg = xhr.statusText || 'Error';
+				if (status === 'timeout') {
+					msg = HebPPBootstrap.i18n.startTimeout || 'Request timed out';
+				}
+				$startMsg.html('<span style="color:#a00;">' + msg + ' — ' + (HebPPBootstrap.i18n.refreshHint || 'refresh the page') + '</span>');
 			}).always(function () {
 				$startBtn.prop('disabled', false);
 			});

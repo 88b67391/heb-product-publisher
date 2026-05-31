@@ -69,11 +69,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			sprintf( __( 'Job 创建：目标站 = %s', 'heb-product-publisher' ), (string) $site_id )
 		);
 
-		as_enqueue_async_action(
-			self::HOOK_PROBE,
-			[ [ 'job_id' => $job_id ] ],
-			self::GROUP
-		);
+		self::schedule_bootstrap_action( self::HOOK_PROBE, [ 'job_id' => $job_id ], 2 );
 
 		return [ 'job_id' => $job_id ];
 	}
@@ -156,7 +152,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 				substr( (string) $source_job_id, 0, 8 )
 			)
 		);
-		as_enqueue_async_action( self::HOOK_PROBE, [ [ 'job_id' => $job_id ] ], self::GROUP );
+		self::schedule_bootstrap_action( self::HOOK_PROBE, [ 'job_id' => $job_id ], 2 );
 		return [ 'job_id' => $job_id ];
 	}
 

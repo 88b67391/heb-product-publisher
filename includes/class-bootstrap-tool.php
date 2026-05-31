@@ -73,6 +73,8 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 					'confirmResendSettings' => __( '仅重发 WordPress 全局设置（含 Elementor/Yoast/theme_mods）到该站点？', 'heb-product-publisher' ),
 					'confirmResendMenus'    => __( '仅重发导航菜单到该站点？', 'heb-product-publisher' ),
 					'starting'      => __( '启动中…', 'heb-product-publisher' ),
+					'startTimeout'  => __( '请求超时', 'heb-product-publisher' ),
+					'refreshHint'   => __( '请刷新页面查看任务是否已创建', 'heb-product-publisher' ),
 					'selectSite'    => __( '请选择目标站点。', 'heb-product-publisher' ),
 				],
 			]
