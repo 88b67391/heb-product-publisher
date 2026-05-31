@@ -54,7 +54,9 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 	 * @param string $hook Current page hook.
 	 */
 	public function enqueue_assets( $hook ) {
-		if ( Heb_Product_Publisher_Admin_Menu::hook_suffix( self::PAGE_SLUG ) !== $hook ) {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$page = isset( $_GET['page'] ) ? sanitize_key( wp_unslash( (string) $_GET['page'] ) ) : '';
+		if ( self::PAGE_SLUG !== $page && Heb_Product_Publisher_Admin_Menu::hook_suffix( self::PAGE_SLUG ) !== $hook ) {
 			return;
 		}
 		wp_enqueue_style( 'heb-pp-bootstrap', HEB_PP_URL . 'assets/css/bootstrap.css', [], HEB_PP_VERSION );

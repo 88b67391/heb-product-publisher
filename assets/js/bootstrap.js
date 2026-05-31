@@ -11,6 +11,11 @@
 		var pollDetailsTimer = null;
 		var currentDetailJobId = null;
 
+		if (typeof HebPPBootstrap === 'undefined') {
+			$startMsg.html('<span style="color:#a00;">Bootstrap 脚本未加载。请 Ctrl+F5 硬刷新，或确认插件已更新到最新版。</span>');
+			return;
+		}
+
 		function startBootstrap() {
 			var siteId = $('#heb-pp-bs-site').val();
 			var dryRun = $('#heb-pp-bs-dry-run').is(':checked');
@@ -226,6 +231,10 @@
 			return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
 				return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
 			});
+		}
+
+		if (!$startBtn.length) {
+			return;
 		}
 
 		$startBtn.on('click', startBootstrap);
