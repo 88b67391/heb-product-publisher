@@ -22,3 +22,4 @@ dist/
 
 .env
 .env.local
+scripts/aapanel/heb-aapanel.env
