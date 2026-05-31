@@ -52,7 +52,6 @@ EOF
 	prep-all)
 		exec bash "$SCRIPT_DIR/heb-prep-cloned-site.sh" prep-all "$@" ;;
 	check)
-		load_env() { source "${HEB_AAPANEL_ENV:-$SCRIPT_DIR/heb-aapanel.env}" 2>/dev/null || source "$SCRIPT_DIR/heb-aapanel.env.example"; }
 		# shellcheck source=lib/common.sh
 		source "$SCRIPT_DIR/lib/common.sh"
 		load_env

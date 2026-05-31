@@ -9,9 +9,16 @@ AAPANEL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 load_env() {
 	local env_file="${HEB_AAPANEL_ENV:-$AAPANEL_DIR/heb-aapanel.env}"
+	if [[ ! -f "$env_file" && -f "$AAPANEL_DIR/heb-aapanel.env.example" ]]; then
+		env_file="$AAPANEL_DIR/heb-aapanel.env.example"
+	fi
 	if [[ -f "$env_file" ]]; then
+		validate_env_file "$env_file"
+		# source 时暂时关闭 -u：双引号内 $ 仍会被展开，validate 已拦截常见误用。
+		set +u
 		# shellcheck disable=SC1090
 		source "$env_file"
+		set -u
 	fi
 
 	WWW_ROOT="${WWW_ROOT:-/www/wwwroot}"
@@ -22,6 +29,14 @@ load_env() {
 	WP_ADMIN_USER="${WP_ADMIN_USER:-admin}"
 	WP_ADMIN_EMAIL="${WP_ADMIN_EMAIL:-admin@example.com}"
 	HUB_URL="${HUB_URL:-https://$MAIN_DOMAIN/wp-admin}"
+}
+
+# 双引号 env 值里的 $9、$HOME 等会被 bash 展开，导致报错或密码被截断。
+validate_env_file() {
+	local f="$1"
+	if grep -qE '^[A-Za-z_][A-Za-z0-9_]*="[^"]*\$' "$f" 2>/dev/null; then
+		die "heb-aapanel.env 中双引号内的 \$ 会被 bash 展开（例如 \$9 → 空）。请改用单引号，例如：WP_ADMIN_PASS='你的密码'"
+	fi
 }
 
 detect_php() {
