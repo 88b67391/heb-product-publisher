@@ -37,6 +37,7 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 		add_action( 'wp_ajax_heb_pp_bs_status', [ $this, 'ajax_status' ] );
 		add_action( 'wp_ajax_heb_pp_bs_cancel', [ $this, 'ajax_cancel' ] );
 		add_action( 'wp_ajax_heb_pp_bs_retry', [ $this, 'ajax_retry' ] );
+		add_action( 'wp_ajax_heb_pp_bs_nudge', [ $this, 'ajax_nudge' ] );
 	}
 
 	public function add_menu() {
@@ -78,6 +79,11 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 					'startTimeout'  => __( '请求超时', 'heb-product-publisher' ),
 					'refreshHint'   => __( '请刷新页面查看任务是否已创建', 'heb-product-publisher' ),
 					'selectSite'    => __( '请选择目标站点。', 'heb-product-publisher' ),
+					'processing'    => __( '正在处理', 'heb-product-publisher' ),
+					'staleHint'     => __( '长时间无更新：Opus 单条可跑 10–20 分钟；若超过 20 分钟仍无进度可点「推进队列」。', 'heb-product-publisher' ),
+					'nudge'         => __( '推进队列', 'heb-product-publisher' ),
+					'nudging'       => __( '推进中…', 'heb-product-publisher' ),
+					'nudgeDone'     => __( '已触发 Action Scheduler，请稍候刷新进度。', 'heb-product-publisher' ),
 				],
 			]
 		);
@@ -169,7 +175,7 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 						</thead>
 						<tbody>
 							<?php foreach ( $recent as $rec ) : ?>
-								<tr data-job-id="<?php echo esc_attr( $rec['id'] ); ?>" class="heb-pp-bs-job-row">
+								<tr data-job-id="<?php echo esc_attr( $rec['id'] ); ?>" data-job-status="<?php echo esc_attr( (string) $rec['status'] ); ?>" class="heb-pp-bs-job-row">
 									<td><code><?php echo esc_html( substr( $rec['id'], 0, 8 ) ); ?></code></td>
 									<td><?php echo esc_html( $rec['site_id'] ); ?></td>
 									<td class="heb-pp-bs-stage"><?php echo esc_html( $rec['current_stage'] ); ?></td>
@@ -217,8 +223,12 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 	 * @return string
 	 */
 	private function format_progress( array $rec ) {
-		$lines = [];
-		foreach ( (array) ( $rec['progress'] ?? [] ) as $stage => $p ) {
+		$rec      = Heb_Product_Publisher_Bootstrap_Status::enrich( $rec );
+		$lines    = [];
+		$stage    = isset( $rec['current_stage'] ) ? (string) $rec['current_stage'] : '';
+		$activity = isset( $rec['activity'] ) && is_array( $rec['activity'] ) ? $rec['activity'] : [];
+
+		foreach ( (array) ( $rec['progress'] ?? [] ) as $stg => $p ) {
 			$queued = (int) ( $p['queued'] ?? 0 );
 			if ( $queued <= 0 ) {
 				continue;
@@ -226,7 +236,25 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 			$done = (int) ( $p['done'] ?? 0 );
 			$fail = (int) ( $p['failed'] ?? 0 );
 			$skip = (int) ( $p['skipped'] ?? 0 );
-			$lines[] = sprintf( '%s: %d/%d (✗%d ⊘%d)', $stage, $done, $queued, $fail, $skip );
+			$pct  = (int) round( 100 * ( $done + $fail + $skip ) / max( 1, $queued ) );
+			$line = sprintf( '%s: %d/%d (%d%%', $stg, $done, $queued, $pct );
+			if ( $fail > 0 || $skip > 0 ) {
+				$line .= sprintf( ', ✗%d ⊘%d', $fail, $skip );
+			}
+			$line .= ')';
+			if ( $stg === $stage && ! empty( $rec['current_item'] ) && is_array( $rec['current_item'] ) ) {
+				$cur = $rec['current_item'];
+				$elapsed = isset( $activity['current_elapsed'] ) ? (int) $activity['current_elapsed'] : 0;
+				$line .= sprintf(
+					' · %s #%d',
+					isset( $cur['type'] ) ? (string) $cur['type'] : '?',
+					isset( $cur['source_id'] ) ? (int) $cur['source_id'] : 0
+				);
+				if ( $elapsed > 0 ) {
+					$line .= sprintf( ' %dm%02ds', (int) floor( $elapsed / 60 ), $elapsed % 60 );
+				}
+			}
+			$lines[] = $line;
 		}
 		return implode( ' · ', $lines );
 	}
@@ -302,11 +330,13 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 			if ( ! $rec ) {
 				wp_send_json_error( [ 'message' => __( 'Job 不存在。', 'heb-product-publisher' ) ] );
 			}
+			$rec = Heb_Product_Publisher_Bootstrap_Status::enrich( $rec );
 			wp_send_json_success( [ 'job' => $rec, 'summary' => $this->format_progress( $rec ) ] );
 		}
 		// 不带 job_id：返回最近 20 个的精简快照（用于轮询表格行）。
 		$rows = [];
 		foreach ( Heb_Product_Publisher_Bootstrap_Status::recent( 20 ) as $rec ) {
+			$rec = Heb_Product_Publisher_Bootstrap_Status::enrich( $rec );
 			$rows[] = [
 				'id'            => $rec['id'],
 				'site_id'       => $rec['site_id'],
@@ -358,5 +388,27 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 			wp_send_json_error( [ 'message' => (string) $res['error'] ] );
 		}
 		wp_send_json_success( [ 'job_id' => (string) $res['job_id'] ] );
+	}
+
+	public function ajax_nudge() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( [ 'message' => __( '权限不足。', 'heb-product-publisher' ) ], 403 );
+		}
+		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
+		$job_id = isset( $_POST['job_id'] ) ? sanitize_text_field( wp_unslash( (string) $_POST['job_id'] ) ) : '';
+		if ( '' !== $job_id ) {
+			$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+			if ( ! $rec ) {
+				wp_send_json_error( [ 'message' => __( 'Job 不存在。', 'heb-product-publisher' ) ] );
+			}
+			Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, 'info', __( '用户手动推进 Action Scheduler 队列…', 'heb-product-publisher' ) );
+		}
+		$ran = Heb_Product_Publisher_Bootstrap_Queue::nudge_queue_runner();
+		wp_send_json_success(
+			[
+				'processed' => $ran,
+				'message'   => __( '已触发队列运行，请稍候查看进度。', 'heb-product-publisher' ),
+			]
+		);
 	}
 }

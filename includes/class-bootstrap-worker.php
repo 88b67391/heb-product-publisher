@@ -34,6 +34,7 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		add_action( Heb_Product_Publisher_Bootstrap_Queue::HOOK_MENU, [ $this, 'handle_menu' ], 10, 1 );
 		add_action( Heb_Product_Publisher_Bootstrap_Queue::HOOK_SETTINGS, [ $this, 'handle_settings' ], 10, 1 );
 		add_action( Heb_Product_Publisher_Bootstrap_Queue::HOOK_FINALIZE, [ $this, 'handle_finalize' ], 10, 1 );
+		add_action( Heb_Product_Publisher_Bootstrap_Queue::HOOK_WATCHDOG, [ $this, 'handle_watchdog' ], 10, 1 );
 	}
 
 	/** @var bool Bootstrap 队列 item 执行中（用于翻译 strict 模式）。 */
@@ -130,15 +131,20 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		}
 		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_TERMS;
 		self::$in_bootstrap_item = true;
+		$t0    = 0.0;
 		try {
 			$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
 			$site = Heb_Product_Publisher_Admin_Settings::get_site( (string) $rec['site_id'] );
 			if ( ! $site ) {
 				throw new \RuntimeException( 'site config missing' );
 			}
+			$term = get_term( $term_id );
+			$label = ( $term && ! is_wp_error( $term ) ) ? (string) $term->name : '';
+			$t0 = $this->begin_item( $job_id, 'term', $term_id, $label );
 			$payload = Heb_Product_Publisher_Term_Sync::build_payload( $term_id );
 			if ( empty( $payload ) ) {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'skipped' );
+				$this->finish_item( $job_id, 'term', $term_id, $t0, true, __( '空 payload，跳过', 'heb-product-publisher' ) );
 				$this->maybe_advance_stage( $job_id );
 				return;
 			}
@@ -148,13 +154,16 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			if ( empty( $res['ok'] ) ) {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 				Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'term', $term_id, isset( $res['message'] ) ? (string) $res['message'] : 'unknown' );
+				$this->finish_item( $job_id, 'term', $term_id, $t0, false );
 			} else {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'done' );
+				$this->finish_item( $job_id, 'term', $term_id, $t0, true );
 				$this->log_distribute_warns( $job_id, 'term', $term_id, $res );
 			}
 		} catch ( \Throwable $e ) {
 			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 			Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'term', $term_id, $e->getMessage() );
+			$this->finish_item( $job_id, 'term', $term_id, $t0, false );
 		} finally {
 			self::$in_bootstrap_item = false;
 		}
@@ -174,15 +183,18 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		}
 		$stage = Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS;
 		self::$in_bootstrap_item = true;
+		$t0    = 0.0;
 		try {
 			$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
 			$site = Heb_Product_Publisher_Admin_Settings::get_site( (string) $rec['site_id'] );
 			if ( ! $site ) {
 				throw new \RuntimeException( 'site config missing' );
 			}
+			$t0 = $this->begin_item( $job_id, 'post', $post_id, get_the_title( $post_id ) );
 			$payload = Heb_Product_Publisher_Sync::build_payload( $post_id );
 			if ( empty( $payload ) ) {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'skipped' );
+				$this->finish_item( $job_id, 'post', $post_id, $t0, true, __( '空 payload，跳过', 'heb-product-publisher' ) );
 				$this->maybe_advance_stage( $job_id );
 				return;
 			}
@@ -191,16 +203,20 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			$res        = $hub_ui->distribute_to_site( $post_id, $payload, (string) $payload['source_locale'], $site, [], $translator );
 			if ( ! empty( $res['locked'] ) ) {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'skipped' );
+				$this->finish_item( $job_id, 'post', $post_id, $t0, true, __( '已锁定，跳过', 'heb-product-publisher' ) );
 			} elseif ( empty( $res['ok'] ) ) {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 				Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'post', $post_id, isset( $res['message'] ) ? (string) $res['message'] : 'unknown' );
+				$this->finish_item( $job_id, 'post', $post_id, $t0, false );
 			} else {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'done' );
+				$this->finish_item( $job_id, 'post', $post_id, $t0, true );
 				$this->log_distribute_warns( $job_id, 'post', $post_id, $res );
 			}
 		} catch ( \Throwable $e ) {
 			Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'failed' );
 			Heb_Product_Publisher_Bootstrap_Status::add_error( $job_id, 'post', $post_id, $e->getMessage() );
+			$this->finish_item( $job_id, 'post', $post_id, $t0, false );
 		} finally {
 			self::$in_bootstrap_item = false;
 		}
@@ -378,6 +394,110 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 	 */
 	private function maybe_advance_stage( $job_id ) {
 		Heb_Product_Publisher_Bootstrap_Queue::advance_stage( $job_id );
+	}
+
+	/**
+	 * 看门狗：job 仍在跑时每 2 分钟检查一次；疑似卡住时写 warning 并轻推 AS。
+	 *
+	 * @param array<string,mixed> $args Args.
+	 * @return void
+	 */
+	public function handle_watchdog( $args ) {
+		$args   = $this->normalize_args( $args );
+		$job_id = (string) ( $args['job_id'] ?? '' );
+		if ( '' === $job_id ) {
+			return;
+		}
+		$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+		if ( ! $rec || ! $this->job_can_run( $job_id ) ) {
+			return;
+		}
+
+		Heb_Product_Publisher_Bootstrap_Queue::schedule_watchdog( $job_id );
+
+		$enriched = Heb_Product_Publisher_Bootstrap_Status::enrich( $rec );
+		$activity = isset( $enriched['activity'] ) && is_array( $enriched['activity'] ) ? $enriched['activity'] : [];
+		if ( empty( $activity['stale'] ) ) {
+			return;
+		}
+
+		$pending = (int) ( $activity['pending_actions'] ?? 0 );
+		$idle    = (int) ( $activity['idle_seconds'] ?? 0 );
+		Heb_Product_Publisher_Bootstrap_Status::add_log(
+			$job_id,
+			'warning',
+			sprintf(
+				/* translators: 1: idle seconds, 2: pending AS actions */
+				__( '已 %1$d 秒无进度更新（Opus 单条可跑 10–20 分钟属正常）；队列待处理 %2$d 项，正在尝试推进…', 'heb-product-publisher' ),
+				$idle,
+				$pending
+			)
+		);
+		Heb_Product_Publisher_Bootstrap_Queue::nudge_queue_runner();
+	}
+
+	/**
+	 * @param string $job_id    Job id.
+	 * @param string $type      Object type.
+	 * @param int    $source_id Source id.
+	 * @param string $label     Label.
+	 * @return float microtime start.
+	 */
+	private function begin_item( $job_id, $type, $source_id, $label = '' ) {
+		Heb_Product_Publisher_Bootstrap_Status::set_current_item( $job_id, $type, $source_id, $label );
+		Heb_Product_Publisher_Bootstrap_Status::add_log(
+			$job_id,
+			'info',
+			sprintf(
+				/* translators: 1: type, 2: id, 3: label */
+				__( '%1$s #%2$d «%3$s» 开始…', 'heb-product-publisher' ),
+				$type,
+				$source_id,
+				'' !== $label ? $label : '-'
+			)
+		);
+		return microtime( true );
+	}
+
+	/**
+	 * @param string      $job_id    Job id.
+	 * @param string      $type      Object type.
+	 * @param int         $source_id Source id.
+	 * @param float       $t0        Start microtime.
+	 * @param bool        $ok        Success.
+	 * @param string|null $note      Optional note instead of ✓/✗.
+	 * @return void
+	 */
+	private function finish_item( $job_id, $type, $source_id, $t0, $ok, $note = null ) {
+		$elapsed = $t0 > 0 ? max( 0, microtime( true ) - $t0 ) : 0;
+		Heb_Product_Publisher_Bootstrap_Status::clear_current_item( $job_id );
+		if ( null !== $note && '' !== $note ) {
+			$msg = sprintf(
+				/* translators: 1: type, 2: id, 3: note, 4: seconds */
+				__( '%1$s #%2$d %3$s (%.0fs)', 'heb-product-publisher' ),
+				$type,
+				$source_id,
+				$note,
+				$elapsed
+			);
+		} elseif ( $ok ) {
+			$msg = sprintf(
+				/* translators: 1: type, 2: id, 3: seconds */
+				__( '%1$s #%2$d ✓ 完成 (%.0fs)', 'heb-product-publisher' ),
+				$type,
+				$source_id,
+				$elapsed
+			);
+		} else {
+			$msg = sprintf(
+				/* translators: 1: type, 2: id, 3: seconds */
+				__( '%1$s #%2$d ✗ 失败 (%.0fs)', 'heb-product-publisher' ),
+				$type,
+				$source_id,
+				$elapsed
+			);
+		}
+		Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, $ok ? 'info' : 'warning', $msg );
 	}
 
 	/**

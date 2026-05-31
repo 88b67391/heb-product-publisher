@@ -108,7 +108,7 @@ class Heb_Product_Publisher_Admin_Settings {
 		add_filter(
 			'heb_pp_translator_http_timeout',
 			static function () {
-				return 600;
+				return 1200;
 			}
 		);
 		add_filter(
@@ -466,7 +466,7 @@ class Heb_Product_Publisher_Admin_Settings {
 				$strategy = 'localized';
 			}
 			$timeout = isset( $row['timeout'] ) ? (int) $row['timeout'] : 0;
-			if ( $timeout < 30 || $timeout > 600 ) {
+			if ( $timeout < 30 || $timeout > 1200 ) {
 				$timeout = 0;
 			}
 			$id     = isset( $row['id'] ) && is_string( $row['id'] ) && '' !== $row['id']
@@ -502,9 +502,10 @@ class Heb_Product_Publisher_Admin_Settings {
 	 */
 	public static function site_timeout( array $site ) {
 		$t = isset( $site['timeout'] ) ? (int) $site['timeout'] : 0;
-		if ( $t < 30 || $t > 600 ) {
-			// 默认 300s：单 page payload 含 Elementor JSON + 图片 sideload，
-			// 子站处理时间常超 180s。如需更长可在站点设置里单独配置（最多 600s）。
+		if ( $t < 30 || $t > 1200 ) {
+			if ( self::is_quality_translator() ) {
+				return 900;
+			}
 			return 300;
 		}
 		return $t;
@@ -709,7 +710,7 @@ class Heb_Product_Publisher_Admin_Settings {
 									<strong><?php esc_html_e( '质量优先', 'heb-product-publisher' ); ?></strong>
 									<span class="description">
 										&middot;
-										<?php esc_html_e( '整段 Elementor 内容一次翻译；任一批次失败不写入子站；HTTP 超时 600s。推荐 Claude Opus 4.8。', 'heb-product-publisher' ); ?>
+										<?php esc_html_e( '整段 Elementor 内容一次翻译；任一批次失败不写入子站；OpenRouter 超时 1200s。推荐 Claude Opus 4.8。', 'heb-product-publisher' ); ?>
 									</span>
 								</label>
 								<label style="display:block;">
@@ -1026,12 +1027,12 @@ class Heb_Product_Publisher_Admin_Settings {
 					value="<?php echo esc_attr( isset( $site['timeout'] ) && (int) $site['timeout'] > 0 ? (int) $site['timeout'] : '' ); ?>"
 					placeholder="300"
 					min="30"
-					max="600"
+					max="1200"
 					step="10"
 					class="small-text"
 				/>
 				<p class="description" style="margin:4px 0 0;font-size:11px;">
-					<?php esc_html_e( '默认 300s；大型 Elementor 页可调到 600', 'heb-product-publisher' ); ?>
+					<?php esc_html_e( '质量优先默认 900s；单页 Elementor 可设 1200', 'heb-product-publisher' ); ?>
 				</p>
 			</td>
 			<td>

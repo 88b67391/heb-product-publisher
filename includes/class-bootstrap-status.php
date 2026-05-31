@@ -62,6 +62,7 @@ class Heb_Product_Publisher_Bootstrap_Status {
 			],
 			'log'    => [],
 			'errors' => [],
+			'current_item' => null,
 		];
 		update_option( self::OPT_PREFIX . $id, $record, false );
 
@@ -176,6 +177,82 @@ class Heb_Product_Publisher_Bootstrap_Status {
 		} finally {
 			delete_transient( $lock_key );
 		}
+	}
+
+	/**
+	 * 标记当前正在处理的条目（UI 实时进度用）。
+	 *
+	 * @param string $id        Job id.
+	 * @param string $type      term|post|menu|settings.
+	 * @param int    $source_id Source object id.
+	 * @param string $label     Human label (title/name).
+	 * @return void
+	 */
+	public static function set_current_item( $id, $type, $source_id, $label = '' ) {
+		self::update(
+			$id,
+			[
+				'current_item' => [
+					'type'       => (string) $type,
+					'source_id'  => (int) $source_id,
+					'label'      => (string) $label,
+					'started_at' => time(),
+				],
+			]
+		);
+	}
+
+	/**
+	 * @param string $id Job id.
+	 * @return void
+	 */
+	public static function clear_current_item( $id ) {
+		self::update( $id, [ 'current_item' => null ] );
+	}
+
+	/**
+	 * 为 API / UI 附加计算字段：进度百分比、进行中条目、是否疑似卡住。
+	 *
+	 * @param array<string,mixed> $rec Job record.
+	 * @return array<string,mixed>
+	 */
+	public static function enrich( array $rec ) {
+		$now     = time();
+		$updated = (int) ( $rec['updated_at'] ?? 0 );
+		$quality = class_exists( 'Heb_Product_Publisher_Admin_Settings', false )
+			&& Heb_Product_Publisher_Admin_Settings::is_quality_translator();
+		$stale_after = $quality ? 900 : 600;
+
+		$stage   = isset( $rec['current_stage'] ) ? (string) $rec['current_stage'] : '';
+		$prog    = isset( $rec['progress'][ $stage ] ) && is_array( $rec['progress'][ $stage ] )
+			? $rec['progress'][ $stage ]
+			: [];
+		$queued  = (int) ( $prog['queued'] ?? 0 );
+		$done    = (int) ( $prog['done'] ?? 0 );
+		$failed  = (int) ( $prog['failed'] ?? 0 );
+		$skipped = (int) ( $prog['skipped'] ?? 0 );
+		$finished_in_stage = $done + $failed + $skipped;
+
+		$rec['activity'] = [
+			'stage_pct'       => $queued > 0 ? (int) round( 100 * $finished_in_stage / $queued ) : 0,
+			'stage_finished'  => $finished_in_stage,
+			'stage_queued'    => $queued,
+			'idle_seconds'    => $updated > 0 ? max( 0, $now - $updated ) : 0,
+			'stale'           => in_array( $rec['status'] ?? '', [ self::STATUS_QUEUED, self::STATUS_RUNNING ], true )
+				&& $updated > 0
+				&& ( $now - $updated ) >= $stale_after,
+			'stale_after'     => $stale_after,
+			'pending_actions' => class_exists( 'Heb_Product_Publisher_Bootstrap_Queue', false )
+				? Heb_Product_Publisher_Bootstrap_Queue::count_pending_actions( (string) ( $rec['id'] ?? '' ) )
+				: 0,
+		];
+
+		$cur = isset( $rec['current_item'] ) && is_array( $rec['current_item'] ) ? $rec['current_item'] : null;
+		if ( $cur && ! empty( $cur['started_at'] ) ) {
+			$rec['activity']['current_elapsed'] = max( 0, $now - (int) $cur['started_at'] );
+		}
+
+		return $rec;
 	}
 
 	/**
@@ -322,6 +399,7 @@ class Heb_Product_Publisher_Bootstrap_Status {
 			Heb_Product_Publisher_Bootstrap_Queue::HOOK_SETTINGS,
 			Heb_Product_Publisher_Bootstrap_Queue::HOOK_MENU,
 			Heb_Product_Publisher_Bootstrap_Queue::HOOK_FINALIZE,
+			Heb_Product_Publisher_Bootstrap_Queue::HOOK_WATCHDOG,
 		];
 		foreach ( $hooks as $hook ) {
 			$actions = as_get_scheduled_actions(

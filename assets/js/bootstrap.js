@@ -16,6 +16,17 @@
 			return;
 		}
 
+		function fmtDuration(sec) {
+			sec = Math.max(0, parseInt(sec, 10) || 0);
+			var m = Math.floor(sec / 60);
+			var s = sec % 60;
+			return m + 'm' + (s < 10 ? '0' : '') + s + 's';
+		}
+
+		function jobFinished(job) {
+			return job && (job.status === 'done' || job.status === 'done_with_errors' || job.status === 'failed' || job.status === 'cancelled');
+		}
+
 		function startBootstrap() {
 			var siteId = $('#heb-pp-bs-site').val();
 			var dryRun = $('#heb-pp-bs-dry-run').is(':checked');
@@ -102,6 +113,9 @@
 				job_id: jobId
 			}).done(function () {
 				pollJobs();
+				if (currentDetailJobId === jobId) {
+					refreshDetails();
+				}
 			});
 		}
 
@@ -118,6 +132,31 @@
 					window.location.reload();
 				} else {
 					window.alert((res && res.data && res.data.message) || 'Retry failed');
+				}
+			});
+		}
+
+		function nudgeQueue(jobId, $btn) {
+			if ($btn) {
+				$btn.prop('disabled', true).text(HebPPBootstrap.i18n.nudging);
+			}
+			$.post(HebPPBootstrap.ajaxUrl, {
+				action: 'heb_pp_bs_nudge',
+				nonce: HebPPBootstrap.nonce,
+				job_id: jobId || ''
+			}).done(function (res) {
+				if (res && res.success) {
+					if ($btn) {
+						$btn.text(HebPPBootstrap.i18n.nudgeDone);
+					}
+					setTimeout(refreshDetails, 1500);
+					pollJobs();
+				}
+			}).always(function () {
+				if ($btn) {
+					setTimeout(function () {
+						$btn.prop('disabled', false).text(HebPPBootstrap.i18n.nudge);
+					}, 3000);
 				}
 			});
 		}
@@ -150,6 +189,43 @@
 			});
 		}
 
+		function renderActivity(job) {
+			var act = job.activity || {};
+			var html = '';
+			var pct = act.stage_pct || 0;
+			html += '<div class="heb-pp-bs-progress-bar-wrap"><div class="heb-pp-bs-progress-bar" style="width:' + pct + '%;"></div></div>';
+			html += '<p style="margin:6px 0;"><strong>' + pct + '%</strong> · stage <code>' + escapeHtml(job.current_stage) + '</code>';
+			if (act.pending_actions) {
+				html += ' · AS 待处理 <strong>' + act.pending_actions + '</strong>';
+			}
+			html += '</p>';
+
+			if (job.current_item && job.current_item.source_id) {
+				var cur = job.current_item;
+				html += '<p class="heb-pp-bs-current-item">';
+				html += escapeHtml(HebPPBootstrap.i18n.processing) + ' <code>' + escapeHtml(cur.type) + ' #' + cur.source_id + '</code>';
+				if (cur.label) {
+					html += ' «' + escapeHtml(cur.label) + '»';
+				}
+				if (act.current_elapsed) {
+					html += ' · ' + fmtDuration(act.current_elapsed);
+				}
+				html += '</p>';
+			}
+
+			if (act.stale) {
+				html += '<div class="notice notice-warning inline" style="margin:10px 0;padding:8px 12px;">';
+				html += '<p style="margin:0;">' + escapeHtml(HebPPBootstrap.i18n.staleHint) + '</p>';
+				html += '<p style="margin:8px 0 0;"><button type="button" class="button button-small heb-pp-bs-nudge" data-job-id="' + escapeHtml(job.id) + '">' + escapeHtml(HebPPBootstrap.i18n.nudge) + '</button></p>';
+				html += '</div>';
+			} else if (!jobFinished(job)) {
+				html += '<p style="margin:8px 0 0;font-size:12px;color:#666;">';
+				html += '<button type="button" class="button button-small heb-pp-bs-nudge" data-job-id="' + escapeHtml(job.id) + '">' + escapeHtml(HebPPBootstrap.i18n.nudge) + '</button>';
+				html += '</p>';
+			}
+			return html;
+		}
+
 		function loadDetails(jobId) {
 			currentDetailJobId = jobId;
 			$details.show();
@@ -173,6 +249,8 @@
 				html += '<p><strong>Site:</strong> ' + escapeHtml(job.site_id) + ' &middot; ';
 				html += '<strong>Status:</strong> ' + escapeHtml(job.status) + ' &middot; ';
 				html += '<strong>Stage:</strong> ' + escapeHtml(job.current_stage) + '</p>';
+
+				html += renderActivity(job);
 
 				html += '<h4>Progress</h4><table class="widefat" style="max-width:600px;"><thead><tr><th>Stage</th><th>Queued</th><th>Done</th><th>Failed</th><th>Skipped</th></tr></thead><tbody>';
 				$.each(job.progress || {}, function (stage, p) {
@@ -217,10 +295,9 @@
 				}
 				$detailsBody.html(html);
 
-				var finished = (job.status === 'done' || job.status === 'done_with_errors' || job.status === 'failed' || job.status === 'cancelled');
-				if (!finished && !pollDetailsTimer) {
+				if (!jobFinished(job) && !pollDetailsTimer) {
 					pollDetailsTimer = setInterval(refreshDetails, 3000);
-				} else if (finished && pollDetailsTimer) {
+				} else if (jobFinished(job) && pollDetailsTimer) {
 					clearInterval(pollDetailsTimer);
 					pollDetailsTimer = null;
 				}
@@ -249,11 +326,18 @@
 		$detailsBody.on('click', '.heb-pp-bs-retry', function () {
 			retryJob($(this).data('job-id'));
 		});
+		$detailsBody.on('click', '.heb-pp-bs-nudge', function () {
+			nudgeQueue($(this).data('job-id'), $(this));
+		});
 		$jobs.on('click', '.heb-pp-bs-details', function () {
 			loadDetails($(this).data('job-id'));
 		});
 
-		// 启动时若有 running，自动开始轮询。
+		// 启动时若有 running job，自动打开详情并轮询。
 		pollJobs();
+		var $running = $jobs.find('tr[data-job-status="running"], tr[data-job-status="queued"]');
+		if ($running.length) {
+			loadDetails($running.first().data('job-id'));
+		}
 	});
 })(jQuery);

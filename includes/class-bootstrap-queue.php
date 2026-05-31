@@ -25,8 +25,31 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 	const HOOK_SETTINGS = 'heb_pp_bs_settings';
 	const HOOK_MENU     = 'heb_pp_bs_menu';
 	const HOOK_FINALIZE = 'heb_pp_bs_finalize';
+	const HOOK_WATCHDOG = 'heb_pp_bs_watchdog';
 
 	const GROUP = 'heb-pp-bootstrap';
+
+	/** @var bool */
+	private static $long_filters_registered = false;
+
+	/**
+	 * Bootstrap AS 任务可能单条跑 10–20 分钟（Opus 翻译）；放宽 queue runner 时间上限。
+	 *
+	 * @return void
+	 */
+	public static function register_long_action_filters() {
+		if ( self::$long_filters_registered ) {
+			return;
+		}
+		self::$long_filters_registered = true;
+		$limit = Heb_Product_Publisher_Admin_Settings::is_quality_translator() ? 1200 : 600;
+		add_filter(
+			'action_scheduler_queue_runner_time_limit',
+			static function () use ( $limit ) {
+				return $limit;
+			}
+		);
+	}
 
 	/**
 	 * 创建 job 并 enqueue 第一个 stage（probe）。
@@ -70,6 +93,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 		);
 
 		self::schedule_bootstrap_action( self::HOOK_PROBE, [ 'job_id' => $job_id ], 2 );
+		self::schedule_watchdog( $job_id );
 
 		return [ 'job_id' => $job_id ];
 	}
@@ -153,7 +177,92 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			)
 		);
 		self::schedule_bootstrap_action( self::HOOK_PROBE, [ 'job_id' => $job_id ], 2 );
+		self::schedule_watchdog( $job_id );
 		return [ 'job_id' => $job_id ];
+	}
+
+	/**
+	 * 周期性检查 job 是否卡住，并轻推 Action Scheduler 继续跑队列。
+	 *
+	 * @param string $job_id Job id.
+	 * @return void
+	 */
+	public static function schedule_watchdog( $job_id ) {
+		if ( ! function_exists( 'as_schedule_single_action' ) ) {
+			return;
+		}
+		as_schedule_single_action(
+			time() + 120,
+			self::HOOK_WATCHDOG,
+			[ [ 'job_id' => (string) $job_id ] ],
+			self::GROUP
+		);
+	}
+
+	/**
+	 * 统计该 job 在 AS 中仍 pending 的任务数。
+	 *
+	 * @param string $job_id Job id.
+	 * @return int
+	 */
+	public static function count_pending_actions( $job_id ) {
+		if ( ! function_exists( 'as_get_scheduled_actions' ) ) {
+			return 0;
+		}
+		$hooks = [
+			self::HOOK_TERM,
+			self::HOOK_POST,
+			self::HOOK_MENU,
+			self::HOOK_SETTINGS,
+			self::HOOK_FINALIZE,
+		];
+		$total = 0;
+		foreach ( $hooks as $hook ) {
+			$actions = as_get_scheduled_actions(
+				[
+					'hook'     => $hook,
+					'group'    => self::GROUP,
+					'status'   => \ActionScheduler_Store::STATUS_PENDING,
+					'per_page' => 200,
+				],
+				'ids'
+			);
+			if ( empty( $actions ) ) {
+				continue;
+			}
+			foreach ( $actions as $action_id ) {
+				$action = function_exists( 'as_get_scheduled_action' ) ? as_get_scheduled_action( $action_id ) : null;
+				if ( ! $action || ! method_exists( $action, 'get_args' ) ) {
+					continue;
+				}
+				$args    = $action->get_args();
+				$payload = isset( $args[0] ) && is_array( $args[0] ) ? $args[0] : $args;
+				if ( isset( $payload['job_id'] ) && (string) $payload['job_id'] === (string) $job_id ) {
+					$total++;
+				}
+			}
+		}
+		return $total;
+	}
+
+	/**
+	 * 手动推进 Bootstrap 相关的 Action Scheduler 队列（后台「推进队列」按钮）。
+	 *
+	 * @return int 本次处理的 action 数量（估算）。
+	 */
+	public static function nudge_queue_runner() {
+		self::register_long_action_filters();
+		Heb_Product_Publisher_Runtime::raise();
+		if ( class_exists( 'ActionScheduler_QueueRunner' ) ) {
+			$runner = \ActionScheduler_QueueRunner::instance();
+			if ( method_exists( $runner, 'run' ) ) {
+				return (int) $runner->run();
+			}
+		}
+		if ( function_exists( 'do_action' ) ) {
+			do_action( 'action_scheduler_run_queue', self::GROUP );
+		}
+		return 0;
 	}
 
 	/**

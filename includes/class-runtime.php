@@ -61,6 +61,9 @@ class Heb_Product_Publisher_Runtime {
 			// 拿不到 group 时按"是我们的"处理，宁可多放开一次。
 			unset( $e );
 		}
+		if ( 0 === strpos( $group, self::AS_GROUP_PREFIX ) ) {
+			Heb_Product_Publisher_Bootstrap_Queue::register_long_action_filters();
+		}
 		self::raise();
 	}
 

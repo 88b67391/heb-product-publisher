@@ -51,3 +51,27 @@
 	background: transparent;
 	color: inherit;
 }
+
+.heb-pp-bs-progress-bar-wrap {
+	height: 8px;
+	background: #e2e8f0;
+	border-radius: 4px;
+	max-width: 600px;
+	overflow: hidden;
+	margin: 8px 0 4px;
+}
+
+.heb-pp-bs-progress-bar {
+	height: 100%;
+	background: linear-gradient(90deg, #2271b1, #135e96);
+	transition: width 0.4s ease;
+	min-width: 2%;
+}
+
+.heb-pp-bs-current-item {
+	margin: 8px 0;
+	padding: 8px 12px;
+	background: #f0f6fc;
+	border-left: 3px solid #2271b1;
+	font-size: 13px;
+}

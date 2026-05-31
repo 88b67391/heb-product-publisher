@@ -29,9 +29,7 @@ class Heb_Product_Publisher_Translator {
 	/** OpenRouter HTTP 调用超时（秒）。
 	 *
 	 * GPT-5 / Claude Opus 等慢模型 + 长 content（10KB+）单批可能 3-5 分钟。
-	 * 300s 默认对绝大多数 OpenRouter 模型都够；可通过 filter
-	 * `heb_pp_translator_http_timeout` 调到更长（最长 600s，再长 nginx /
-	 * php-fpm 会先砍 socket）。
+	 * 质量优先默认 1200s；可通过 filter `heb_pp_translator_http_timeout` 调整。
 	 */
 	const HTTP_TIMEOUT = 300;
 
