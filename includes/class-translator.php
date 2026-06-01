@@ -168,7 +168,7 @@ class Heb_Product_Publisher_Translator {
 	}
 
 	/**
-	 * 递归还原 Elementor 树；遇到 widget `settings` 时只保留白名单字段的译文。
+	 * 递归还原 Elementor 树；settings 内合并全部可译字符串，样式键保留源站。
 	 *
 	 * @param array<string,mixed> $original Original branch.
 	 * @param array<string,mixed> $current  Translated branch.
@@ -195,13 +195,14 @@ class Heb_Product_Publisher_Translator {
 	}
 
 	/**
-	 * Elementor widget settings：默认保留源站全部控件值，仅覆盖可翻译文本字段。
+	 * Elementor widget settings：保留源站样式；覆盖所有可译字符串字段（不限白名单）。
 	 *
 	 * @param array<string,mixed> $original Source settings.
 	 * @param array<string,mixed> $translated Translated settings.
 	 * @return array<string,mixed>
 	 */
 	private function merge_elementor_settings_deep( array $original, array $translated, $in_repeater = false ) {
+		unset( $in_repeater );
 		$out = $original;
 		foreach ( $translated as $k => $tv ) {
 			if ( ! is_string( $k ) || ! array_key_exists( $k, $original ) ) {
@@ -211,13 +212,8 @@ class Heb_Product_Publisher_Translator {
 				continue;
 			}
 			$ov = $original[ $k ];
-			if ( $in_repeater || $this->is_elementor_translatable_setting_key( $k ) ) {
-				if ( is_string( $tv ) ) {
-					$orig_html = is_string( $ov ) ? $ov : '';
-					$out[ $k ] = $this->sanitize_elementor_html_setting( $k, $tv, $orig_html );
-				} elseif ( is_array( $tv ) && is_array( $ov ) ) {
-					$out[ $k ] = $this->merge_elementor_settings_deep( $ov, $tv, $in_repeater );
-				}
+			if ( is_string( $tv ) && is_string( $ov ) && $this->should_merge_elementor_setting_string( $k, 'settings', $ov ) ) {
+				$out[ $k ] = $this->sanitize_elementor_html_setting( $k, $tv, $ov );
 				continue;
 			}
 			if ( self::is_elementor_repeater_container_key( $k ) && is_array( $tv ) && is_array( $ov ) ) {
@@ -225,7 +221,7 @@ class Heb_Product_Publisher_Translator {
 				continue;
 			}
 			if ( is_array( $tv ) && is_array( $ov ) ) {
-				$out[ $k ] = $this->merge_elementor_settings_deep( $ov, $tv, $in_repeater );
+				$out[ $k ] = $this->merge_elementor_settings_deep( $ov, $tv, false );
 			}
 		}
 		return $out;
@@ -244,7 +240,7 @@ class Heb_Product_Publisher_Translator {
 				continue;
 			}
 			$trans_item    = isset( $translated[ $idx ] ) && is_array( $translated[ $idx ] ) ? $translated[ $idx ] : [];
-			$out[ $idx ]   = $this->merge_elementor_settings_deep( $orig_item, $trans_item, true );
+			$out[ $idx ]   = $this->merge_elementor_settings_deep( $orig_item, $trans_item, false );
 		}
 		return $out;
 	}
@@ -375,7 +371,8 @@ class Heb_Product_Publisher_Translator {
 	 * @return string
 	 */
 	private function sanitize_elementor_html_setting( $key, $html, $original_html = '' ) {
-		if ( ! in_array( $key, [ 'editor', 'html', 'content', 'tab_content', 'description' ], true ) ) {
+		unset( $key, $original_html );
+		if ( false === strpos( $html, '<' ) ) {
 			return $html;
 		}
 		$html = preg_replace_callback(
@@ -410,7 +407,7 @@ class Heb_Product_Publisher_Translator {
 	}
 
 	/**
-	 * settings 内仅收集白名单 / repeater 字段，避免 AI 碰到 typography 数值。
+	 * settings 内：收集非样式 / 非 skip 字段（不再仅限白名单，避免漏翻 widget 控件）。
 	 *
 	 * @param string $key  Field key.
 	 * @param string $path Dot path.
@@ -423,35 +420,25 @@ class Heb_Product_Publisher_Translator {
 		if ( ctype_digit( $key ) ) {
 			return true;
 		}
-		if ( $this->is_elementor_translatable_setting_key( $key ) ) {
-			return true;
-		}
 		if ( self::is_elementor_repeater_container_key( $key ) ) {
 			return true;
 		}
-		if ( $this->is_inside_elementor_repeater_row( $path ) ) {
-			return ! $this->should_skip_key( $key, $path ) && ! $this->is_elementor_style_key( $key, $path );
-		}
-		return false;
+		return ! $this->should_skip_key( $key, $path ) && ! $this->is_elementor_style_key( $key, $path );
 	}
 
 	/**
-	 * 路径是否在 Elementor repeater 行内（如 settings.slides.0.heading）。
+	 * merge 时是否用译文覆盖该字符串 setting。
 	 *
-	 * @param string $path Dot path.
+	 * @param string $key            Setting key.
+	 * @param string $path           Dot path.
+	 * @param string $original_value Source string.
 	 * @return bool
 	 */
-	private function is_inside_elementor_repeater_row( $path ) {
-		$containers = array_map(
-			static function ( $k ) {
-				return preg_quote( (string) $k, '/' );
-			},
-			self::elementor_repeater_container_keys()
-		);
-		if ( empty( $containers ) ) {
+	private function should_merge_elementor_setting_string( $key, $path, $original_value ) {
+		if ( $this->should_skip_key( $key, $path ) || $this->is_elementor_style_key( $key, $path ) ) {
 			return false;
 		}
-		return (bool) preg_match( '/\.settings\.(?:' . implode( '|', $containers ) . ')\.\d+\./', $path );
+		return $this->looks_translatable( $original_value );
 	}
 
 	/**
@@ -639,8 +626,7 @@ class Heb_Product_Publisher_Translator {
 					continue;
 				}
 				$applied = $this->apply_strings( $v, $child, $map );
-				if ( is_string( $applied ) && is_string( $v )
-					&& ( $this->is_elementor_translatable_setting_key( $key ) || $this->is_inside_elementor_repeater_row( $child ) ) ) {
+				if ( is_string( $applied ) && is_string( $v ) && $this->should_merge_elementor_setting_string( $key, $child, $v ) ) {
 					$applied = $this->sanitize_elementor_html_setting( $key, $applied, $v );
 				}
 				$out[ $k ] = $applied;
