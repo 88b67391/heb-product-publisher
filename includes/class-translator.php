@@ -156,14 +156,248 @@ class Heb_Product_Publisher_Translator {
 	 * @return array<string,mixed>
 	 */
 	private function preserve_elementor_style_fields( array $source, array $translated ) {
-		foreach ( [ 'elementor_data', 'elementor_page_settings' ] as $field ) {
-			if ( ! isset( $source[ $field ] ) || ! is_array( $source[ $field ] ) ) {
-				continue;
-			}
-			$dst = isset( $translated[ $field ] ) && is_array( $translated[ $field ] ) ? $translated[ $field ] : [];
-			$translated[ $field ] = $this->preserve_elementor_styles_recursive( $source[ $field ], $dst, $field );
+		if ( isset( $source['elementor_data'] ) && is_array( $source['elementor_data'] ) ) {
+			$dst = isset( $translated['elementor_data'] ) && is_array( $translated['elementor_data'] ) ? $translated['elementor_data'] : [];
+			$translated['elementor_data'] = $this->preserve_elementor_tree( $source['elementor_data'], $dst );
+		}
+		if ( isset( $source['elementor_page_settings'] ) && is_array( $source['elementor_page_settings'] ) ) {
+			$dst = isset( $translated['elementor_page_settings'] ) && is_array( $translated['elementor_page_settings'] ) ? $translated['elementor_page_settings'] : [];
+			$translated['elementor_page_settings'] = $this->merge_elementor_settings_deep( $source['elementor_page_settings'], $dst );
 		}
 		return $translated;
+	}
+
+	/**
+	 * 递归还原 Elementor 树；遇到 widget `settings` 时只保留白名单字段的译文。
+	 *
+	 * @param array<string,mixed> $original Original branch.
+	 * @param array<string,mixed> $current  Translated branch.
+	 * @return array<string,mixed>
+	 */
+	private function preserve_elementor_tree( array $original, array $current ) {
+		foreach ( $original as $k => $ov ) {
+			$key = (string) $k;
+			if ( 'settings' === $key && is_array( $ov ) ) {
+				$cv            = isset( $current[ $k ] ) && is_array( $current[ $k ] ) ? $current[ $k ] : [];
+				$current[ $k ] = $this->merge_elementor_settings_deep( $ov, $cv );
+				continue;
+			}
+			if ( $this->should_skip_key( $key, $key ) || $this->is_elementor_style_key( $key, $key ) ) {
+				$current[ $k ] = $ov;
+				continue;
+			}
+			if ( is_array( $ov ) ) {
+				$cv            = isset( $current[ $k ] ) && is_array( $current[ $k ] ) ? $current[ $k ] : [];
+				$current[ $k ] = $this->preserve_elementor_tree( $ov, $cv );
+			}
+		}
+		return $current;
+	}
+
+	/**
+	 * Elementor widget settings：默认保留源站全部控件值，仅覆盖可翻译文本字段。
+	 *
+	 * @param array<string,mixed> $original Source settings.
+	 * @param array<string,mixed> $translated Translated settings.
+	 * @return array<string,mixed>
+	 */
+	private function merge_elementor_settings_deep( array $original, array $translated ) {
+		$out = $original;
+		foreach ( $translated as $k => $tv ) {
+			if ( ! is_string( $k ) || ! array_key_exists( $k, $original ) ) {
+				continue;
+			}
+			if ( $this->should_skip_key( $k, 'settings' ) || $this->is_elementor_style_key( $k, 'settings' ) ) {
+				continue;
+			}
+			$ov = $original[ $k ];
+			if ( $this->is_elementor_translatable_setting_key( $k ) ) {
+				if ( is_string( $tv ) ) {
+					$out[ $k ] = $this->sanitize_elementor_html_setting( $k, $tv );
+				} elseif ( is_array( $tv ) && is_array( $ov ) ) {
+					$out[ $k ] = $this->merge_elementor_settings_deep( $ov, $tv );
+				}
+				continue;
+			}
+			if ( self::is_elementor_repeater_container_key( $k ) && is_array( $tv ) && is_array( $ov ) ) {
+				$out[ $k ] = $this->merge_elementor_repeater_items( $ov, $tv );
+				continue;
+			}
+			if ( is_array( $tv ) && is_array( $ov ) ) {
+				$out[ $k ] = $this->merge_elementor_settings_deep( $ov, $tv );
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * @param array<int|string,mixed> $original Repeater rows.
+	 * @param array<int|string,mixed> $translated Translated rows.
+	 * @return array<int|string,mixed>
+	 */
+	private function merge_elementor_repeater_items( array $original, array $translated ) {
+		$out = [];
+		foreach ( $original as $idx => $orig_item ) {
+			if ( ! is_array( $orig_item ) ) {
+				$out[ $idx ] = $orig_item;
+				continue;
+			}
+			$trans_item    = isset( $translated[ $idx ] ) && is_array( $translated[ $idx ] ) ? $translated[ $idx ] : [];
+			$out[ $idx ]   = $this->merge_elementor_settings_deep( $orig_item, $trans_item );
+		}
+		return $out;
+	}
+
+	/**
+	 * 允许 AI 翻译的 Elementor settings 字段（白名单）。
+	 *
+	 * @return array<int,string>
+	 */
+	public static function elementor_translatable_setting_keys() {
+		return (array) apply_filters(
+			'heb_pp_elementor_translatable_setting_keys',
+			[
+				'editor',
+				'title',
+				'subtitle',
+				'text',
+				'description',
+				'button_text',
+				'link_text',
+				'inner_text',
+				'html',
+				'content',
+				'tab_title',
+				'tab_content',
+				'alert_title',
+				'alert_description',
+				'placeholder',
+				'label',
+				'caption',
+				'tooltip',
+				'heading_title',
+				'heading_subtitle',
+				'title_text',
+				'description_text',
+				'field_label',
+				'field_placeholder',
+				'prefix',
+				'suffix',
+				'empty_fields_message',
+				'after_text',
+				'before_text',
+				'banner_title',
+				'banner_description',
+				'footer_text',
+				'header_text',
+				'ribbon_title',
+				'testimonial_content',
+				'testimonial_name',
+				'testimonial_job',
+				'address',
+				'phone',
+				'email',
+				'website',
+				'message',
+				'subject',
+				'item_title',
+				'item_description',
+				'additional_information',
+			]
+		);
+	}
+
+	/**
+	 * @return array<int,string>
+	 */
+	public static function elementor_repeater_container_keys() {
+		return (array) apply_filters(
+			'heb_pp_elementor_repeater_container_keys',
+			[
+				'items',
+				'tabs',
+				'slides',
+				'accordion',
+				'icon_list',
+				'price_list',
+				'social_icon_list',
+				'form_fields',
+				'carousel',
+				'gallery',
+				'buttons',
+				'list_items',
+				'features_list',
+			]
+		);
+	}
+
+	/**
+	 * @param string $key Setting key.
+	 * @return bool
+	 */
+	private function is_elementor_translatable_setting_key( $key ) {
+		static $cache = null;
+		if ( null === $cache ) {
+			$cache = array_flip( self::elementor_translatable_setting_keys() );
+		}
+		return isset( $cache[ $key ] );
+	}
+
+	/**
+	 * @param string $key Setting key.
+	 * @return bool
+	 */
+	private static function is_elementor_repeater_container_key( $key ) {
+		static $cache = null;
+		if ( null === $cache ) {
+			$cache = array_flip( self::elementor_repeater_container_keys() );
+		}
+		return isset( $cache[ $key ] );
+	}
+
+	/**
+	 * 去掉 editor HTML 里的 inline 字号/行高，避免覆盖 widget Typography 控件。
+	 *
+	 * @param string $key  Setting key.
+	 * @param string $html HTML content.
+	 * @return string
+	 */
+	private function sanitize_elementor_html_setting( $key, $html ) {
+		if ( ! in_array( $key, [ 'editor', 'html', 'content', 'tab_content', 'description' ], true ) ) {
+			return $html;
+		}
+		$html = preg_replace( '/\s*font-size\s*:\s*[^;"\'\s]+;?/i', '', $html );
+		$html = preg_replace( '/\s*line-height\s*:\s*[^;"\'\s]+;?/i', '', $html );
+		$html = preg_replace( '/\s*font-family\s*:\s*[^;"\'\s]+;?/i', '', $html );
+		return is_string( $html ) ? $html : '';
+	}
+
+	/**
+	 * @param string $path Dot path.
+	 * @return bool
+	 */
+	private function is_elementor_settings_context( $path ) {
+		return (bool) preg_match( '/(?:^|\.)settings(\.|$)/', $path );
+	}
+
+	/**
+	 * settings 内仅收集白名单 / repeater 字段，避免 AI 碰到 typography 数值。
+	 *
+	 * @param string $key  Field key.
+	 * @param string $path Dot path.
+	 * @return bool
+	 */
+	private function should_collect_elementor_setting_key( $key, $path ) {
+		if ( ! $this->is_elementor_settings_context( $path ) ) {
+			return true;
+		}
+		if ( ctype_digit( $key ) ) {
+			return true;
+		}
+		if ( $this->is_elementor_translatable_setting_key( $key ) ) {
+			return true;
+		}
+		return self::is_elementor_repeater_container_key( $key );
 	}
 
 	/**
@@ -171,21 +405,10 @@ class Heb_Product_Publisher_Translator {
 	 * @param array<string,mixed> $current  Translated branch.
 	 * @param string              $path     Dot path for context.
 	 * @return array<string,mixed>
+	 * @deprecated 3.3.0-beta.23 保留兼容；新逻辑用 preserve_elementor_tree + merge_elementor_settings_deep。
 	 */
 	private function preserve_elementor_styles_recursive( array $original, array $current, $path ) {
-		foreach ( $original as $k => $ov ) {
-			$key        = (string) $k;
-			$child_path = '' === $path ? $key : $path . '.' . $key;
-			if ( $this->should_skip_key( $key, $child_path ) || $this->is_elementor_style_key( $key, $child_path ) ) {
-				$current[ $k ] = $ov;
-				continue;
-			}
-			if ( is_array( $ov ) ) {
-				$cv = isset( $current[ $k ] ) && is_array( $current[ $k ] ) ? $current[ $k ] : [];
-				$current[ $k ] = $this->preserve_elementor_styles_recursive( $ov, $cv, $child_path );
-			}
-		}
-		return $current;
+		return $this->preserve_elementor_tree( $original, $current );
 	}
 
 	/**
@@ -196,14 +419,14 @@ class Heb_Product_Publisher_Translator {
 	 * @return bool
 	 */
 	private function is_elementor_style_key( $key, $path ) {
-		if ( preg_match( '/^typography_/i', $key ) ) {
+		if ( preg_match( '/^typography_/i', $key ) || 'typography' === $key ) {
 			return true;
 		}
-		if ( false === strpos( $path, 'elementor_data' ) && false === strpos( $path, 'elementor_page_settings' ) ) {
+		if ( false === strpos( $path, 'elementor_data' ) && false === strpos( $path, 'elementor_page_settings' ) && 'settings' !== $path ) {
 			return false;
 		}
 		return (bool) preg_match(
-			'/^(size|unit|sizes|font_size|line_height|letter_spacing|word_spacing|height|width|max_width|min_height|gap|column_gap|row_gap|space_between|flex_|align_|justify_|object_|grid_|z_index|opacity|border_|background_|padding|margin|custom_css|stretch_section|content_width|text_color|title_color|link_color|hover_color|_css)$/i',
+			'/^(size|unit|sizes|font_size|line_height|letter_spacing|word_spacing|height|width|max_width|min_height|gap|column_gap|row_gap|space_between|flex_|align_|justify_|object_|grid_|z_index|opacity|border_|background_|padding|margin|custom_css|stretch_section|content_width|text_color|title_color|link_color|hover_color|_css|typography)$/i',
 			$key
 		);
 	}
@@ -305,6 +528,9 @@ class Heb_Product_Publisher_Translator {
 			foreach ( $value as $k => $v ) {
 				$key   = (string) $k;
 				$child = '' === $path ? $key : $path . '.' . $key;
+				if ( ! $this->should_collect_elementor_setting_key( $key, $child ) ) {
+					continue;
+				}
 				if ( $this->should_skip_key( $key, $child ) ) {
 					continue;
 				}
@@ -350,11 +576,19 @@ class Heb_Product_Publisher_Translator {
 			foreach ( $value as $k => $v ) {
 				$key   = (string) $k;
 				$child = '' === $path ? $key : $path . '.' . $key;
+				if ( ! $this->should_collect_elementor_setting_key( $key, $child ) ) {
+					$out[ $k ] = $v;
+					continue;
+				}
 				if ( $this->should_skip_key( $key, $child ) ) {
 					$out[ $k ] = $v;
 					continue;
 				}
-				$out[ $k ] = $this->apply_strings( $v, $child, $map );
+				$applied = $this->apply_strings( $v, $child, $map );
+				if ( $this->is_elementor_translatable_setting_key( $key ) && is_string( $applied ) ) {
+					$applied = $this->sanitize_elementor_html_setting( $key, $applied );
+				}
+				$out[ $k ] = $applied;
 			}
 			return $out;
 		}
@@ -492,7 +726,7 @@ class Heb_Product_Publisher_Translator {
 		if ( '' === $key ) {
 			return false;
 		}
-		if ( preg_match( '/^typography_/i', $key ) ) {
+		if ( preg_match( '/^typography_/i', $key ) || 'typography' === $key ) {
 			return true;
 		}
 		$skip = self::skip_keys();
@@ -792,7 +1026,7 @@ class Heb_Product_Publisher_Translator {
 			. "2) Preserve HTML tags, attributes, entities and whitespace exactly; only translate visible text nodes. "
 			. "3) Do NOT translate and KEEP verbatim: URLs, email addresses, numbers, measurements, dates, brand names, SKU/product codes (e.g. 108D/2, GRS, SD, FOB, T/T, L/C, D/P, D/A), file paths, CSS/HTML identifiers, placeholder tokens like {xxx}, %s, [tag], WordPress shortcodes like [elementor-template id=\"xx\"] or [contact-form-7 ...], and Yoast SEO variables wrapped in double percent signs like %%title%%, %%sep%%, %%sitename%%, %%page%%, %%primary_category%%. "
 			. "4) If a value looks like an identifier/enum key (e.g. 'paypal', 'odm', 'oem', 'both', 'tt', 'lc', 'flex-start', 'center', 'auto', 'inherit', 'eager', 'lazy'), keep it unchanged. "
-			. "5) For Elementor widget settings: only translate user-visible text like 'title', 'subtitle', 'description', 'button_text', 'tab_title', 'placeholder', 'label', 'caption', 'tooltip', editor HTML content. Do NOT translate technical settings like animation names, alignment values, CSS class names, icon names. "
+			. "5) For Elementor widget settings: only translate user-visible text like 'title', 'subtitle', 'description', 'button_text', 'tab_title', 'placeholder', 'label', 'caption', 'tooltip', editor HTML content. Do NOT translate or modify ANY typography/style values (font-size, line-height, typography_*, size, unit, colors, spacing, alignment enums). Never change numbers in JSON values. "
 			. "6) Translate natural-language sentences, product descriptions and marketing copy into {$dst} using the appropriate professional industry terminology. "
 			. "7) Return ONLY the JSON object. No explanation, no markdown fences, no preamble.";
 
