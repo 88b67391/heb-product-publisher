@@ -143,8 +143,69 @@ class Heb_Product_Publisher_Translator {
 		}
 
 		$new_payload = $this->apply_strings( $payload, '', $translated_map );
+		$new_payload = $this->preserve_elementor_style_fields( $payload, $new_payload );
 
 		return [ 'payload' => $new_payload, 'stats' => $stats, 'errors' => $errors ];
+	}
+
+	/**
+	 * 翻译后强制还原 Elementor 样式字段，防止 AI 误改 font-size / typography 等数值。
+	 *
+	 * @param array<string,mixed> $source    原始 payload。
+	 * @param array<string,mixed> $translated 已翻译 payload。
+	 * @return array<string,mixed>
+	 */
+	private function preserve_elementor_style_fields( array $source, array $translated ) {
+		foreach ( [ 'elementor_data', 'elementor_page_settings' ] as $field ) {
+			if ( ! isset( $source[ $field ] ) || ! is_array( $source[ $field ] ) ) {
+				continue;
+			}
+			$dst = isset( $translated[ $field ] ) && is_array( $translated[ $field ] ) ? $translated[ $field ] : [];
+			$translated[ $field ] = $this->preserve_elementor_styles_recursive( $source[ $field ], $dst, $field );
+		}
+		return $translated;
+	}
+
+	/**
+	 * @param array<string,mixed> $original Original branch.
+	 * @param array<string,mixed> $current  Translated branch.
+	 * @param string              $path     Dot path for context.
+	 * @return array<string,mixed>
+	 */
+	private function preserve_elementor_styles_recursive( array $original, array $current, $path ) {
+		foreach ( $original as $k => $ov ) {
+			$key        = (string) $k;
+			$child_path = '' === $path ? $key : $path . '.' . $key;
+			if ( $this->should_skip_key( $key, $child_path ) || $this->is_elementor_style_key( $key, $child_path ) ) {
+				$current[ $k ] = $ov;
+				continue;
+			}
+			if ( is_array( $ov ) ) {
+				$cv = isset( $current[ $k ] ) && is_array( $current[ $k ] ) ? $current[ $k ] : [];
+				$current[ $k ] = $this->preserve_elementor_styles_recursive( $ov, $cv, $child_path );
+			}
+		}
+		return $current;
+	}
+
+	/**
+	 * Elementor 控件里的纯样式键（非 editor 正文）。
+	 *
+	 * @param string $key  Field key.
+	 * @param string $path Dot path.
+	 * @return bool
+	 */
+	private function is_elementor_style_key( $key, $path ) {
+		if ( preg_match( '/^typography_/i', $key ) ) {
+			return true;
+		}
+		if ( false === strpos( $path, 'elementor_data' ) && false === strpos( $path, 'elementor_page_settings' ) ) {
+			return false;
+		}
+		return (bool) preg_match(
+			'/^(size|unit|sizes|font_size|line_height|letter_spacing|word_spacing|height|width|max_width|min_height|gap|column_gap|row_gap|space_between|flex_|align_|justify_|object_|grid_|z_index|opacity|border_|background_|padding|margin|custom_css|stretch_section|content_width|text_color|title_color|link_color|hover_color|_css)$/i',
+			$key
+		);
 	}
 
 	/**
@@ -244,7 +305,7 @@ class Heb_Product_Publisher_Translator {
 			foreach ( $value as $k => $v ) {
 				$key   = (string) $k;
 				$child = '' === $path ? $key : $path . '.' . $key;
-				if ( $this->should_skip_key( $key ) ) {
+				if ( $this->should_skip_key( $key, $child ) ) {
 					continue;
 				}
 				$this->collect_strings( $v, $child, $out );
@@ -289,7 +350,7 @@ class Heb_Product_Publisher_Translator {
 			foreach ( $value as $k => $v ) {
 				$key   = (string) $k;
 				$child = '' === $path ? $key : $path . '.' . $key;
-				if ( $this->should_skip_key( $key ) ) {
+				if ( $this->should_skip_key( $key, $child ) ) {
 					$out[ $k ] = $v;
 					continue;
 				}
@@ -423,12 +484,16 @@ class Heb_Product_Publisher_Translator {
 	}
 
 	/**
-	 * @param string $key Field/array key.
+	 * @param string $key  Field/array key.
+	 * @param string $path Dot path for context.
 	 * @return bool
 	 */
-	private function should_skip_key( $key ) {
+	private function should_skip_key( $key, $path = '' ) {
 		if ( '' === $key ) {
 			return false;
+		}
+		if ( preg_match( '/^typography_/i', $key ) ) {
+			return true;
 		}
 		$skip = self::skip_keys();
 		if ( in_array( $key, $skip, true ) ) {
@@ -438,8 +503,10 @@ class Heb_Product_Publisher_Translator {
 			return true;
 		}
 		// Elementor 控件后缀：_tablet / _mobile / _hover / _color / _typography / _shadow
-		// 这些都是样式控制不需要翻译；如果其文本内容确实需要翻（罕见），主键不带这些后缀依然会被翻到。
 		if ( preg_match( '/(_color|_typography|_shadow|_padding|_margin|_size|_position|_align|_animation|_transition|_border|_background|_overlay|_zoom|_opacity)(_(tablet|mobile|hover|active|focus|extra))?$/i', $key ) ) {
+			return true;
+		}
+		if ( $this->is_elementor_style_key( $key, $path ) ) {
 			return true;
 		}
 		return false;

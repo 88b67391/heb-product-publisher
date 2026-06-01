@@ -27,11 +27,24 @@
 			return job && (job.status === 'done' || job.status === 'done_with_errors' || job.status === 'failed' || job.status === 'cancelled');
 		}
 
+		function collectScopePostTypes() {
+			var pts = [];
+			$('.heb-pp-bs-scope-pt:checked').each(function () {
+				pts.push(String($(this).data('pt')));
+			});
+			return pts;
+		}
+
 		function startBootstrap() {
 			var siteId = $('#heb-pp-bs-site').val();
 			var dryRun = $('#heb-pp-bs-dry-run').is(':checked');
+			var scopePostTypes = collectScopePostTypes();
 			if (!siteId) {
 				window.alert(HebPPBootstrap.i18n.selectSite);
+				return;
+			}
+			if (!dryRun && scopePostTypes.length === 0 && !$('#heb-pp-bs-scope-terms').is(':checked') && !$('#heb-pp-bs-scope-settings').is(':checked') && !$('#heb-pp-bs-scope-menus').is(':checked')) {
+				window.alert(HebPPBootstrap.i18n.selectPostType);
 				return;
 			}
 			if (!window.confirm(dryRun ? HebPPBootstrap.i18n.confirmDryRun : HebPPBootstrap.i18n.confirmStart)) {
@@ -50,7 +63,7 @@
 					nonce: HebPPBootstrap.nonce,
 					site_id: siteId,
 					scope_terms: $('#heb-pp-bs-scope-terms').is(':checked') ? 1 : 0,
-					scope_posts: $('#heb-pp-bs-scope-posts').is(':checked') ? 1 : 0,
+					scope_post_types: scopePostTypes,
 					scope_menus: $('#heb-pp-bs-scope-menus').is(':checked') ? 1 : 0,
 					scope_settings: $('#heb-pp-bs-scope-settings').is(':checked') ? 1 : 0,
 					scope_menu_locations: $('#heb-pp-bs-scope-menu-locations').is(':checked') ? 1 : 0,
@@ -80,7 +93,11 @@
 				window.alert(HebPPBootstrap.i18n.selectSite);
 				return;
 			}
-			var msg = scope === 'settings' ? HebPPBootstrap.i18n.confirmResendSettings : HebPPBootstrap.i18n.confirmResendMenus;
+			var msg = scope === 'settings'
+				? HebPPBootstrap.i18n.confirmResendSettings
+				: (scope === 'elementor_library'
+					? HebPPBootstrap.i18n.confirmResendTemplates
+					: HebPPBootstrap.i18n.confirmResendMenus);
 			if (!window.confirm(msg)) {
 				return;
 			}
@@ -344,6 +361,7 @@
 
 		$startBtn.on('click', startBootstrap);
 		$('#heb-pp-bs-resend-settings').on('click', function () { resendScope('settings'); });
+		$('#heb-pp-bs-resend-templates').on('click', function () { resendScope('elementor_library'); });
 		$('#heb-pp-bs-resend-menus').on('click', function () { resendScope('menus'); });
 		$jobs.on('click', '.heb-pp-bs-cancel', function () {
 			cancelJob($(this).data('job-id'));

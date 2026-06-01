@@ -74,6 +74,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 		$defaults = [
 			'scope_terms'          => true,
 			'scope_posts'          => true,
+			'scope_post_types'     => heb_pp_distributable_post_types(),
 			'scope_menus'          => true,
 			'scope_settings'       => true,
 			'scope_menu_locations' => false,
@@ -428,7 +429,8 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 
 		$rescued = 0;
 		if ( Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS === $stage ) {
-			$missing = self::find_missing_stage_objects( $rec, $job_id, self::HOOK_POST, 'post', 'post_id', self::collect_distributable_post_ids(), $remaining );
+			$opts    = isset( $rec['opts'] ) && is_array( $rec['opts'] ) ? $rec['opts'] : [];
+			$missing = self::find_missing_stage_objects( $rec, $job_id, self::HOOK_POST, 'post', 'post_id', self::collect_distributable_post_ids( $opts ), $remaining );
 			foreach ( $missing as $post_id ) {
 				if ( in_array( (int) $post_id, self::get_job_inflight_object_ids( $job_id, self::HOOK_POST, 'post_id' ), true ) ) {
 					continue;
@@ -540,11 +542,65 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 	}
 
 	/**
+	 * Bootstrap posts 阶段实际要分发的 post type（按推荐顺序）。
+	 *
+	 * @param array<string,mixed> $opts Job opts.
+	 * @return array<int,string>
+	 */
+	public static function scoped_post_types( array $opts ) {
+		$allowed = heb_pp_distributable_post_types();
+		$order   = self::post_type_dispatch_order();
+		$pick    = [];
+
+		if ( ! empty( $opts['scope_post_types'] ) && is_array( $opts['scope_post_types'] ) ) {
+			foreach ( $opts['scope_post_types'] as $pt ) {
+				if ( is_string( $pt ) && in_array( $pt, $allowed, true ) ) {
+					$pick[ $pt ] = true;
+				}
+			}
+		} elseif ( ! empty( $opts['scope_posts'] ) ) {
+			foreach ( $allowed as $pt ) {
+				$pick[ $pt ] = true;
+			}
+		}
+
+		if ( empty( $pick ) ) {
+			return [];
+		}
+
+		$out = [];
+		foreach ( $order as $pt ) {
+			if ( isset( $pick[ $pt ] ) ) {
+				$out[] = $pt;
+			}
+		}
+		foreach ( array_keys( $pick ) as $pt ) {
+			if ( ! in_array( $pt, $out, true ) ) {
+				$out[] = $pt;
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * elementor_library 优先，便于 page / archive 引用模板。
+	 *
+	 * @return array<int,string>
+	 */
+	private static function post_type_dispatch_order() {
+		return (array) apply_filters(
+			'heb_pp_bootstrap_post_type_order',
+			[ 'elementor_library', 'page', 'products', 'solutions' ]
+		);
+	}
+
+	/**
+	 * @param array<string,mixed> $opts Job opts.
 	 * @return array<int,int>
 	 */
-	private static function collect_distributable_post_ids() {
+	private static function collect_distributable_post_ids( array $opts = [] ) {
 		$ids = [];
-		foreach ( heb_pp_distributable_post_types() as $pt ) {
+		foreach ( self::scoped_post_types( $opts ) as $pt ) {
 			$post_ids = get_posts(
 				[
 					'post_type'      => $pt,
@@ -796,8 +852,8 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 				}
 			}
 		}
-		if ( ! empty( $opts['scope_posts'] ) ) {
-			foreach ( heb_pp_distributable_post_types() as $pt ) {
+		if ( ! empty( $opts['scope_posts'] ) || ! empty( $opts['scope_post_types'] ) ) {
+			foreach ( self::scoped_post_types( $opts ) as $pt ) {
 				$ids = get_posts(
 					[
 						'post_type'      => $pt,
@@ -1018,7 +1074,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 				$next = $flow[ $next ];
 				continue;
 			}
-			if ( Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS === $next && empty( $opts['scope_posts'] ) ) {
+			if ( Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS === $next && empty( self::scoped_post_types( $opts ) ) ) {
 				$next = $flow[ $next ];
 				continue;
 			}
@@ -1126,8 +1182,11 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 	 * @return void
 	 */
 	private static function dispatch_posts( $job_id ) {
+		$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+		$opts = ( $rec && isset( $rec['opts'] ) && is_array( $rec['opts'] ) ) ? $rec['opts'] : [];
+		$types = self::scoped_post_types( $opts );
 		$queued = 0;
-		foreach ( heb_pp_distributable_post_types() as $pt ) {
+		foreach ( $types as $pt ) {
 			$ids = get_posts(
 				[
 					'post_type'      => $pt,
@@ -1155,7 +1214,16 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			}
 		}
 		Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS, 'queued', $queued );
-		Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, 'info', sprintf( __( '已排队 %d 个 post', 'heb-product-publisher' ), $queued ) );
+		Heb_Product_Publisher_Bootstrap_Status::add_log(
+			$job_id,
+			'info',
+			sprintf(
+				/* translators: 1: count, 2: comma-separated post types */
+				__( '已排队 %1$d 个 post（%2$s）', 'heb-product-publisher' ),
+				$queued,
+				! empty( $types ) ? implode( ', ', $types ) : '-'
+			)
+		);
 
 		if ( 0 === $queued ) {
 			self::advance_stage( $job_id );
