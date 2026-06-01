@@ -70,11 +70,18 @@ class Heb_Product_Publisher_Sync {
 	 * @return bool
 	 */
 	private static function looks_like_elementor_image( array $value ) {
-		if ( ! isset( $value['id'], $value['url'] ) ) {
+		if ( ! isset( $value['url'] ) ) {
 			return false;
 		}
 		$url = $value['url'];
 		if ( ! is_string( $url ) || ! preg_match( '#^https?://#i', $url ) ) {
+			return false;
+		}
+		// 媒体库路径：即使没有 id 字段也视为图片（常见于 background_image）。
+		if ( preg_match( '#/wp-content/uploads/#i', $url ) ) {
+			return true;
+		}
+		if ( ! isset( $value['id'] ) ) {
 			return false;
 		}
 		// id 必须看起来像 attachment ID 或者空字符串（来自 hover image 等可选项）。

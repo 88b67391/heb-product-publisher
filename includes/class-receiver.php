@@ -16,6 +16,9 @@ class Heb_Product_Publisher_Receiver {
 	/** @var self|null */
 	private static $instance = null;
 
+	/** @var array<int,string> 当前请求允许 sideload 的来源域名（含 Hub 主站）。 */
+	private $sideload_trusted_hosts = [];
+
 	/**
 	 * @return self
 	 */
@@ -124,6 +127,15 @@ class Heb_Product_Publisher_Receiver {
 			[
 				'methods'             => 'POST',
 				'callback'            => [ $this, 'rest_delete_by_source' ],
+				'permission_callback' => '__return_true',
+			]
+		);
+		register_rest_route(
+			'heb-publisher/v1',
+			'/process-pending-media',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ $this, 'rest_process_pending_media' ],
 				'permission_callback' => '__return_true',
 			]
 		);
@@ -513,6 +525,7 @@ class Heb_Product_Publisher_Receiver {
 			if ( is_wp_error( $body ) ) {
 				return $body;
 			}
+			$this->sideload_trusted_hosts = $this->collect_sideload_trusted_hosts( $body );
 			if ( ! class_exists( 'Heb_Product_Publisher_Settings_Sync' ) ) {
 				return new \WP_Error(
 					'heb_pub_settings_unavailable',
@@ -1344,6 +1357,7 @@ class Heb_Product_Publisher_Receiver {
 		if ( is_wp_error( $body ) ) {
 			return $body;
 		}
+		$this->sideload_trusted_hosts = $this->collect_sideload_trusted_hosts( $body );
 
 		$post_type = isset( $body['post_type'] ) ? sanitize_key( (string) $body['post_type'] ) : '';
 		if ( '' === $post_type || ! post_type_exists( $post_type ) ) {
@@ -1532,6 +1546,17 @@ class Heb_Product_Publisher_Receiver {
 			$queued = Heb_Product_Publisher_Async_Media::enqueue( $post_id, $pending_media );
 		}
 
+		$bootstrap_ctx = ! empty( $body['bootstrap_context'] );
+		if ( $queued > 0 && class_exists( 'Heb_Product_Publisher_Async_Media' ) ) {
+			if ( $bootstrap_ctx ) {
+				Heb_Product_Publisher_Async_Media::drain_post( $post_id, 12 );
+				$progress      = Heb_Product_Publisher_Async_Media::progress( $post_id );
+				$queued        = (int) ( $progress['pending'] ?? 0 );
+			} else {
+				Heb_Product_Publisher_Async_Media::kick_queue_runner();
+			}
+		}
+
 		if ( $source_post_id > 0 ) {
 			update_post_meta( $post_id, '_heb_publisher_source_post_id', $source_post_id );
 		}
@@ -1550,7 +1575,7 @@ class Heb_Product_Publisher_Receiver {
 				'edit_url'            => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
 				'permalink'           => get_permalink( $post_id ),
 				'pending_media'       => $queued,
-				'pending_media_status' => $queued > 0 ? 'queued' : 'done',
+				'pending_media_status' => $queued > 0 ? ( $bootstrap_ctx ? 'partial' : 'queued' ) : 'done',
 			]
 		);
 	}
@@ -1753,6 +1778,72 @@ class Heb_Product_Publisher_Receiver {
 	}
 
 	/**
+	 * POST /process-pending-media — 同步 drain Elementor 待 sideload 图片队列。
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function rest_process_pending_media( $request ) {
+		Heb_Product_Publisher_Runtime::raise();
+		$body = $this->parse_authenticated_request( $request );
+		if ( is_wp_error( $body ) ) {
+			return $body;
+		}
+		if ( ! class_exists( 'Heb_Product_Publisher_Async_Media' ) ) {
+			return new \WP_Error( 'heb_pub_media_unavailable', __( 'Async media handler not loaded.', 'heb-product-publisher' ), [ 'status' => 503 ] );
+		}
+		$this->sideload_trusted_hosts = $this->collect_sideload_trusted_hosts( $body );
+		$limit  = isset( $body['limit'] ) ? max( 1, min( 50, (int) $body['limit'] ) ) : 20;
+		$result = Heb_Product_Publisher_Async_Media::process_all_pending( $limit );
+		return rest_ensure_response(
+			[
+				'success'   => true,
+				'processed' => (int) ( $result['processed'] ?? 0 ),
+				'remaining' => (int) ( $result['remaining'] ?? 0 ),
+				'urls_left' => (int) ( $result['urls_left'] ?? 0 ),
+			]
+		);
+	}
+
+	/**
+	 * @param array<string,mixed> $body Import payload.
+	 * @return array<int,string>
+	 */
+	private function collect_sideload_trusted_hosts( array $body ) {
+		$hosts = [];
+		$src   = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+		if ( '' !== $src ) {
+			$h = wp_parse_url( 'https://' . ltrim( $src, '/' ), PHP_URL_HOST );
+			if ( is_string( $h ) && '' !== $h ) {
+				$hosts[] = strtolower( $h );
+			}
+			$hosts[] = strtolower( $src );
+		}
+		if ( class_exists( 'Heb_Product_Publisher_Admin_Settings', false ) ) {
+			foreach ( Heb_Product_Publisher_Admin_Settings::remote_sites() as $site ) {
+				if ( empty( $site['url'] ) ) {
+					continue;
+				}
+				$h = wp_parse_url( (string) $site['url'], PHP_URL_HOST );
+				if ( is_string( $h ) && '' !== $h ) {
+					$hosts[] = strtolower( $h );
+				}
+			}
+		}
+		$home = wp_parse_url( home_url(), PHP_URL_HOST );
+		if ( is_string( $home ) && '' !== $home ) {
+			$hosts[] = strtolower( $home );
+		}
+		return array_values(
+			array_unique(
+				array_filter(
+					(array) apply_filters( 'heb_pp_sideload_trusted_hosts', $hosts, $body )
+				)
+			)
+		);
+	}
+
+	/**
 	 * 判断 URL 是否指向公共 IP / 公网域名。拒绝：
 	 *  - 非 http/https
 	 *  - localhost / loopback / link-local / 私网（10/8、172.16/12、192.168/16）
@@ -1772,6 +1863,10 @@ class Heb_Product_Publisher_Receiver {
 			return false;
 		}
 		$host = strtolower( (string) $parts['host'] );
+
+		if ( in_array( $host, $this->sideload_trusted_hosts, true ) ) {
+			return true;
+		}
 
 		$blocked_hosts = [ 'localhost', 'metadata.google.internal', 'metadata' ];
 		if ( in_array( $host, $blocked_hosts, true ) ) {
@@ -1871,7 +1966,7 @@ class Heb_Product_Publisher_Receiver {
 			if ( $request_url === $url ) {
 				$args['limit_response_size'] = self::MAX_SIDELOAD_BYTES + 1;
 				$args['timeout']             = 60;
-				$args['redirection']         = 0;
+				$args['redirection']         = 5;
 				$args['reject_unsafe_urls']  = true;
 			}
 			return $args;

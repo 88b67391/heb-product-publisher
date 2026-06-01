@@ -81,16 +81,124 @@ class Heb_Product_Publisher_Async_Media {
 		update_post_meta( $post_id, self::META_STATUS, 'pending' );
 
 		// 避免重复排队：如果已有同 post 的 task 在 pending，不再 schedule。
+		$as_args = [ [ 'post_id' => $post_id ] ];
 		if ( function_exists( 'as_has_scheduled_action' ) ) {
-			if ( as_has_scheduled_action( self::AS_HOOK, [ 'post_id' => $post_id ], self::AS_GROUP ) ) {
+			if ( as_has_scheduled_action( self::AS_HOOK, $as_args, self::AS_GROUP ) ) {
 				return count( $merged );
 			}
 		}
 		if ( function_exists( 'as_schedule_single_action' ) ) {
-			as_schedule_single_action( time() + 1, self::AS_HOOK, [ 'post_id' => $post_id ], self::AS_GROUP );
+			as_schedule_single_action( time() + 1, self::AS_HOOK, $as_args, self::AS_GROUP );
 		}
 
 		return count( $merged );
+	}
+
+	/**
+	 * 尽力触发 Action Scheduler 跑几个 task（非 Bootstrap 分发后立刻推进队列）。
+	 *
+	 * @return void
+	 */
+	public static function kick_queue_runner() {
+		if ( ! class_exists( 'ActionScheduler_QueueRunner', false ) ) {
+			return;
+		}
+		try {
+			\ActionScheduler_QueueRunner::instance()->run( 3 );
+		} catch ( \Throwable $e ) {
+			unset( $e );
+		}
+	}
+
+	/**
+	 * Bootstrap / 手动 drain：同步处理单个 post 的 pending media（多轮直到空或达上限）。
+	 *
+	 * @param int $post_id     Post id.
+	 * @param int $max_rounds  Max sideload rounds.
+	 * @return void
+	 */
+	public static function drain_post( $post_id, $max_rounds = 5 ) {
+		$post_id = (int) $post_id;
+		if ( $post_id <= 0 ) {
+			return;
+		}
+		$inst = self::instance();
+		for ( $i = 0; $i < max( 1, (int) $max_rounds ); $i++ ) {
+			$pending = get_post_meta( $post_id, self::META_PENDING, true );
+			if ( ! is_array( $pending ) || empty( $pending ) ) {
+				break;
+			}
+			$inst->handle_sideload( [ 'post_id' => $post_id ] );
+		}
+	}
+
+	/**
+	 * 批量 drain 仍有 pending media 的 post。
+	 *
+	 * @param int $limit Max posts per call.
+	 * @return array{processed:int,remaining:int,urls_left:int}
+	 */
+	public static function process_all_pending( $limit = 20 ) {
+		$limit = max( 1, min( 50, (int) $limit ) );
+		$ids   = get_posts(
+			[
+				'post_type'      => 'any',
+				'post_status'    => 'any',
+				'posts_per_page' => $limit,
+				'fields'         => 'ids',
+				'no_found_rows'  => true,
+				'meta_query'     => [
+					[
+						'key'     => self::META_PENDING,
+						'compare' => 'EXISTS',
+					],
+				],
+			]
+		);
+		$processed = 0;
+		foreach ( $ids as $pid ) {
+			self::drain_post( (int) $pid, 8 );
+			$processed++;
+		}
+		return [
+			'processed' => $processed,
+			'remaining' => self::count_posts_with_pending(),
+			'urls_left' => self::count_pending_urls(),
+		];
+	}
+
+	/**
+	 * @return int
+	 */
+	public static function count_posts_with_pending() {
+		global $wpdb;
+		return (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta} WHERE meta_key = %s",
+				self::META_PENDING
+			)
+		);
+	}
+
+	/**
+	 * @return int
+	 */
+	public static function count_pending_urls() {
+		global $wpdb;
+		$rows = $wpdb->get_col(
+			$wpdb->prepare(
+				"SELECT meta_value FROM {$wpdb->postmeta} WHERE meta_key = %s LIMIT 500",
+				self::META_PENDING
+			)
+		);
+		$total = 0;
+		foreach ( (array) $rows as $raw ) {
+			$val = maybe_unserialize( $raw );
+			if ( is_array( $val ) ) {
+				$total += count( $val );
+			}
+		}
+		return $total;
 	}
 
 	/**
@@ -99,10 +207,10 @@ class Heb_Product_Publisher_Async_Media {
 	 * @param int $post_id Post id (AS 传入)。
 	 * @return void
 	 */
-	public function handle_sideload( $post_id ) {
+	public function handle_sideload( $args ) {
 		Heb_Product_Publisher_Runtime::raise();
 
-		$post_id = (int) $post_id;
+		$post_id = self::normalize_post_id( $args );
 		if ( $post_id <= 0 || ! get_post( $post_id ) ) {
 			return;
 		}
@@ -181,7 +289,7 @@ class Heb_Product_Publisher_Async_Media {
 
 		$delay = min( 3600, 60 * (int) pow( 2, max( 0, $max_attempt - 1 ) ) ); // 60s, 120s, 240s, 480s, 960s
 		if ( function_exists( 'as_schedule_single_action' ) ) {
-			as_schedule_single_action( time() + $delay, self::AS_HOOK, [ 'post_id' => $post_id ], self::AS_GROUP );
+			as_schedule_single_action( time() + $delay, self::AS_HOOK, [ [ 'post_id' => $post_id ] ], self::AS_GROUP );
 		}
 		update_post_meta( $post_id, self::META_STATUS, 'pending' );
 		// 部分完成也清一下缓存，让已 sideload 的图能用本地副本渲染。
@@ -231,11 +339,12 @@ class Heb_Product_Publisher_Async_Media {
 		if ( is_array( $value ) ) {
 			// 命中 Elementor image 节点 { id, url, ... }，url 命中就换。
 			$has_url = isset( $value['url'] ) && is_string( $value['url'] ) && '' !== $value['url'];
-			if ( $has_url && isset( $replacements[ $value['url'] ] ) ) {
-				$rep          = $replacements[ $value['url'] ];
-				$value['id']  = $rep['id'];
-				$value['url'] = $rep['url'];
-				// 继续递归子节点（嵌套 image 罕见但保留通用性）。
+			if ( $has_url ) {
+				$rep = $this->match_replacement( $value['url'], $replacements );
+				if ( null !== $rep ) {
+					$value['id']  = $rep['id'];
+					$value['url'] = $rep['url'];
+				}
 			}
 			foreach ( $value as $k => $v ) {
 				$value[ $k ] = $this->walk_replace( $v, $replacements );
@@ -243,6 +352,62 @@ class Heb_Product_Publisher_Async_Media {
 			return $value;
 		}
 		return $value;
+	}
+
+	/**
+	 * @param string                                         $url           Remote/local url in elementor json.
+	 * @param array<string,array{id:int,url:string}>         $replacements  Map.
+	 * @return array{id:int,url:string}|null
+	 */
+	private function match_replacement( $url, array $replacements ) {
+		if ( isset( $replacements[ $url ] ) ) {
+			return $replacements[ $url ];
+		}
+		$norm = self::normalize_media_url( $url );
+		foreach ( $replacements as $remote => $rep ) {
+			if ( self::normalize_media_url( $remote ) === $norm ) {
+				return $rep;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * @param string $url Image URL.
+	 * @return string
+	 */
+	public static function normalize_media_url( $url ) {
+		$url = trim( (string) $url );
+		if ( '' === $url ) {
+			return '';
+		}
+		$parts = wp_parse_url( $url );
+		if ( ! is_array( $parts ) ) {
+			return strtolower( $url );
+		}
+		$path = isset( $parts['path'] ) ? (string) $parts['path'] : '';
+		return strtolower( (string) ( $parts['host'] ?? '' ) . $path );
+	}
+
+	/**
+	 * @param mixed $args AS args.
+	 * @return int
+	 */
+	private static function normalize_post_id( $args ) {
+		if ( is_numeric( $args ) ) {
+			return (int) $args;
+		}
+		if ( ! is_array( $args ) ) {
+			return 0;
+		}
+		if ( isset( $args['post_id'] ) ) {
+			return (int) $args['post_id'];
+		}
+		$first = reset( $args );
+		if ( is_array( $first ) && isset( $first['post_id'] ) ) {
+			return (int) $first['post_id'];
+		}
+		return 0;
 	}
 
 	/**

@@ -205,6 +205,7 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 				$this->maybe_advance_stage( $job_id );
 				return;
 			}
+			$payload['bootstrap_context'] = true;
 			$translator = new Heb_Product_Publisher_Translator();
 			$hub_ui     = Heb_Product_Publisher_Hub_UI::instance();
 			$res        = $hub_ui->distribute_to_site( $post_id, $payload, (string) $payload['source_locale'], $site, [], $translator );
@@ -217,7 +218,15 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 				$this->finish_item( $job_id, 'post', $post_id, $t0, false );
 			} else {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'done' );
-				$this->finish_item( $job_id, 'post', $post_id, $t0, true );
+				$note = '';
+				if ( ! empty( $res['pending_media'] ) ) {
+					$note = sprintf(
+						/* translators: %d: pending media count */
+						__( '（media pending %d）', 'heb-product-publisher' ),
+						(int) $res['pending_media']
+					);
+				}
+				$this->finish_item( $job_id, 'post', $post_id, $t0, true, $note );
 				$this->log_distribute_warns( $job_id, 'post', $post_id, $res );
 			}
 		} catch ( \Throwable $e ) {
@@ -386,6 +395,12 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 				'finished_at'   => time(),
 			]
 		);
+
+		$media_note = $this->drain_remote_pending_media( $rec );
+		if ( '' !== $media_note ) {
+			Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, 'info', $media_note );
+		}
+
 		Heb_Product_Publisher_Bootstrap_Status::add_log(
 			$job_id,
 			$status === Heb_Product_Publisher_Bootstrap_Status::STATUS_DONE ? 'info' : 'error',
@@ -688,5 +703,59 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			}
 		}
 		return [];
+	}
+
+	/**
+	 * Bootstrap 收尾：在目标子站同步 drain Elementor 图片 sideload 队列。
+	 *
+	 * @param array<string,mixed> $rec Job record.
+	 * @return string Log line or empty.
+	 */
+	private function drain_remote_pending_media( array $rec ) {
+		$site = Heb_Product_Publisher_Admin_Settings::get_site( (string) ( $rec['site_id'] ?? '' ) );
+		if ( ! $site ) {
+			return '';
+		}
+		$total_processed = 0;
+		$remaining       = -1;
+		for ( $round = 0; $round < 15; $round++ ) {
+			$res = Heb_Product_Publisher_Remote_Client::post(
+				$site,
+				'/process-pending-media',
+				[
+					'source_site' => (string) wp_parse_url( home_url(), PHP_URL_HOST ),
+					'limit'       => 25,
+				],
+				120
+			);
+			if ( is_wp_error( $res ) ) {
+				return sprintf(
+					/* translators: %s: error message */
+					__( 'Elementor 图片收尾失败：%s', 'heb-product-publisher' ),
+					$res->get_error_message()
+				);
+			}
+			$total_processed += (int) ( $res['processed'] ?? 0 );
+			$remaining        = (int) ( $res['urls_left'] ?? 0 );
+			if ( $remaining <= 0 ) {
+				break;
+			}
+		}
+		if ( $total_processed <= 0 && $remaining <= 0 ) {
+			return __( 'Elementor 图片队列：无待处理项', 'heb-product-publisher' );
+		}
+		if ( $remaining > 0 ) {
+			return sprintf(
+				/* translators: 1: processed posts, 2: remaining urls */
+				__( 'Elementor 图片收尾：已处理 %1$d 个 post，仍有 %2$d 张待 sideload（请检查子站能否访问主站图片 URL）', 'heb-product-publisher' ),
+				$total_processed,
+				$remaining
+			);
+		}
+		return sprintf(
+			/* translators: %d: processed posts */
+			__( 'Elementor 图片收尾完成：共处理 %d 个 post', 'heb-product-publisher' ),
+			$total_processed
+		);
 	}
 }
