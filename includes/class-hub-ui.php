@@ -1000,6 +1000,17 @@ class Heb_Product_Publisher_Hub_UI {
 			);
 		}
 
+		$referenced = Heb_Product_Publisher_Sync::find_referenced_template_ids(
+			isset( $basepayload['elementor_data'] ) ? $basepayload['elementor_data'] : []
+		);
+		if ( ! empty( $referenced ) ) {
+			$warnings[] = sprintf(
+				/* translators: %s: comma-separated loop/template post IDs */
+				__( 'Loop Grid / 模板引用模板 #%s：必须先分发对应 Elementor 模板（elementor_library），否则子站 remap 失败会导致 Loop 无样式、文字回退为超大默认字号。', 'heb-product-publisher' ),
+				implode( ', #', $referenced )
+			);
+		}
+
 		return $warnings;
 	}
 }

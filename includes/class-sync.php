@@ -479,6 +479,40 @@ class Heb_Product_Publisher_Sync {
 	}
 
 	/**
+	 * 扫描 Elementor settings 里引用的模板/Loop 模板 ID
+	 * （loop_item_template_id / template_id / selected_template_id）。
+	 * 子站需先分发这些 elementor_library 模板，否则 remap 失败 → Loop 无样式。
+	 *
+	 * @param mixed $value elementor_data 根节点。
+	 * @return array<int,int>
+	 */
+	public static function find_referenced_template_ids( $value ) {
+		$ids  = [];
+		$keys = [ 'loop_item_template_id', 'template_id', 'selected_template_id' ];
+		self::walk_referenced_template_ids( $value, $keys, $ids );
+		$ids = array_values( array_unique( array_filter( array_map( 'intval', $ids ) ) ) );
+		sort( $ids, SORT_NUMERIC );
+		return $ids;
+	}
+
+	/**
+	 * @param mixed          $value 当前值。
+	 * @param array<int,string> $keys  目标键名。
+	 * @param array<int,int> $ids   收集器（引用）。
+	 */
+	private static function walk_referenced_template_ids( $value, array $keys, array &$ids ) {
+		if ( ! is_array( $value ) ) {
+			return;
+		}
+		foreach ( $value as $k => $v ) {
+			if ( is_string( $k ) && in_array( $k, $keys, true ) && ( is_numeric( $v ) || ctype_digit( (string) $v ) ) ) {
+				$ids[] = (int) $v;
+			}
+			self::walk_referenced_template_ids( $v, $keys, $ids );
+		}
+	}
+
+	/**
 	 * @param mixed              $value 当前值。
 	 * @param array<int,int>     $ids   收集器（引用）。
 	 */

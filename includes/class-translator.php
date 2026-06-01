@@ -447,27 +447,38 @@ class Heb_Product_Publisher_Translator {
 	/**
 	 * 按标签顺序，把源 HTML inline 排版属性合并回译文（防止翻译后字号/字体丢失）。
 	 *
+	 * 安全防护：仅当源与译文的 style 属性数量、且包裹标签序列完全一致时才按序还原；
+	 * 任一不匹配就整体跳过，避免序号错位把标题大字号塞到正文（beta.30 的回归点）。
+	 *
 	 * @param string $html          Translated HTML.
 	 * @param string $original_html Source HTML.
 	 * @return string
 	 */
 	private function restore_inline_typography_from_source( $html, $original_html ) {
-		preg_match_all( '/\sstyle=(["\'])(.*?)\1/i', $original_html, $orig_styles, PREG_SET_ORDER );
-		if ( empty( $orig_styles ) ) {
+		preg_match_all( '/<([a-z0-9]+)\b[^>]*\sstyle=(["\'])(.*?)\2/i', $original_html, $orig_styles, PREG_SET_ORDER );
+		preg_match_all( '/<([a-z0-9]+)\b[^>]*\sstyle=(["\'])(.*?)\2/i', $html, $trans_styles, PREG_SET_ORDER );
+		if ( empty( $orig_styles ) || count( $orig_styles ) !== count( $trans_styles ) ) {
 			return $html;
 		}
-		$idx = 0;
+		// 标签序列必须完全一致，否则视为结构被 AI 改动，放弃还原。
+		foreach ( $orig_styles as $i => $os ) {
+			if ( strtolower( (string) $os[1] ) !== strtolower( (string) $trans_styles[ $i ][1] ) ) {
+				return $html;
+			}
+		}
+		$idx  = 0;
 		$self = $this;
 		$out  = preg_replace_callback(
-			'/\sstyle=(["\'])(.*?)\1/i',
+			'/(<[a-z0-9]+\b[^>]*\sstyle=)(["\'])(.*?)\2/i',
 			static function ( $m ) use ( $orig_styles, &$idx, $self ) {
 				if ( ! isset( $orig_styles[ $idx ] ) ) {
+					$idx++;
 					return $m[0];
 				}
-				$orig_style = (string) $orig_styles[ $idx ][2];
+				$orig_style = (string) $orig_styles[ $idx ][3];
 				$idx++;
-				$merged = $self->merge_inline_typography_styles( $orig_style, (string) $m[2] );
-				return ' style=' . $m[1] . $merged . $m[1];
+				$merged = $self->merge_inline_typography_styles( $orig_style, (string) $m[3] );
+				return $m[1] . $m[2] . $merged . $m[2];
 			},
 			$html
 		);
