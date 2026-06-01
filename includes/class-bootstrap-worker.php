@@ -548,35 +548,67 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 	 * @return void
 	 */
 	private function finish_item( $job_id, $type, $source_id, $t0, $ok, $note = null ) {
-		$elapsed = $t0 > 0 ? max( 0, microtime( true ) - $t0 ) : 0;
+		$elapsed = $this->resolve_item_elapsed( $job_id, $type, $source_id, $t0 );
+		$secs    = (int) max( 0, round( $elapsed ) );
 		Heb_Product_Publisher_Bootstrap_Status::clear_current_item( $job_id );
 		if ( null !== $note && '' !== $note ) {
 			$msg = sprintf(
 				/* translators: 1: type, 2: id, 3: note, 4: seconds */
-				__( '%1$s #%2$d %3$s (%.0fs)', 'heb-product-publisher' ),
+				__( '%1$s #%2$d %3$s (%4$d s)', 'heb-product-publisher' ),
 				$type,
 				$source_id,
 				$note,
-				$elapsed
+				$secs
 			);
 		} elseif ( $ok ) {
 			$msg = sprintf(
 				/* translators: 1: type, 2: id, 3: seconds */
-				__( '%1$s #%2$d ✓ 完成 (%.0fs)', 'heb-product-publisher' ),
+				__( '%1$s #%2$d ✓ 完成 (%3$d s)', 'heb-product-publisher' ),
 				$type,
 				$source_id,
-				$elapsed
+				$secs
 			);
 		} else {
 			$msg = sprintf(
 				/* translators: 1: type, 2: id, 3: seconds */
-				__( '%1$s #%2$d ✗ 失败 (%.0fs)', 'heb-product-publisher' ),
+				__( '%1$s #%2$d ✗ 失败 (%3$d s)', 'heb-product-publisher' ),
 				$type,
 				$source_id,
-				$elapsed
+				$secs
 			);
 		}
 		Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, $ok ? 'info' : 'warning', $msg );
+	}
+
+	/**
+	 * 计算单条 Bootstrap 任务耗时（秒）。优先 microtime，回退 current_item 记录。
+	 *
+	 * @param string $job_id    Job id.
+	 * @param string $type      Object type.
+	 * @param int    $source_id Source id.
+	 * @param float  $t0        Worker-local microtime from begin_item().
+	 * @return float
+	 */
+	private function resolve_item_elapsed( $job_id, $type, $source_id, $t0 ) {
+		$elapsed = 0.0;
+		if ( is_numeric( $t0 ) && (float) $t0 > 0 ) {
+			$elapsed = max( 0.0, microtime( true ) - (float) $t0 );
+		}
+		if ( $elapsed >= 0.5 ) {
+			return $elapsed;
+		}
+		$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+		$cur = is_array( $rec['current_item'] ?? null ) ? $rec['current_item'] : null;
+		if ( ! $cur || (string) ( $cur['type'] ?? '' ) !== (string) $type || (int) ( $cur['source_id'] ?? 0 ) !== (int) $source_id ) {
+			return $elapsed;
+		}
+		if ( ! empty( $cur['started_micro'] ) && is_numeric( $cur['started_micro'] ) ) {
+			return max( $elapsed, microtime( true ) - (float) $cur['started_micro'] );
+		}
+		if ( ! empty( $cur['started_at'] ) ) {
+			return max( $elapsed, (float) ( time() - (int) $cur['started_at'] ) );
+		}
+		return $elapsed;
 	}
 
 	/**

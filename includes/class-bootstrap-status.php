@@ -193,10 +193,11 @@ class Heb_Product_Publisher_Bootstrap_Status {
 			$id,
 			[
 				'current_item' => [
-					'type'       => (string) $type,
-					'source_id'  => (int) $source_id,
-					'label'      => (string) $label,
-					'started_at' => time(),
+					'type'          => (string) $type,
+					'source_id'     => (int) $source_id,
+					'label'         => (string) $label,
+					'started_at'    => time(),
+					'started_micro' => microtime( true ),
 				],
 			]
 		);
