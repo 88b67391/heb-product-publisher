@@ -1202,6 +1202,11 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 				continue;
 			}
 			$ordered = self::sort_posts_by_parent_depth( $ids );
+			if ( 'elementor_library' === $pt ) {
+				// 被引用的模板（Loop Item / 内嵌模板）必须先分发，否则引用它的
+				// Single / Archive 在子站 remap 时找不到目标，导致 Loop 无样式。
+				$ordered = self::order_rows_by_template_refs( $ordered );
+			}
 			foreach ( $ordered as $row ) {
 				self::schedule_bootstrap_action(
 					self::HOOK_POST,
@@ -1327,6 +1332,88 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			}
 		);
 		return $rows;
+	}
+
+	/**
+	 * 读取某 Elementor 模板引用的其它模板 ID（loop_item_template_id 等）。
+	 *
+	 * @param int $post_id Template post id.
+	 * @return array<int,int>
+	 */
+	private static function template_ref_ids( $post_id ) {
+		if ( ! class_exists( 'Heb_Product_Publisher_Sync' ) ) {
+			return [];
+		}
+		$raw = get_post_meta( (int) $post_id, '_elementor_data', true );
+		if ( ! is_string( $raw ) || '' === $raw ) {
+			return [];
+		}
+		$decoded = json_decode( $raw, true );
+		if ( ! is_array( $decoded ) ) {
+			return [];
+		}
+		return Heb_Product_Publisher_Sync::find_referenced_template_ids( $decoded );
+	}
+
+	/**
+	 * 依赖排序：被引用的模板排在引用者之前（拓扑序，含环保护）。
+	 *
+	 * @param array<int,array{id:int,depth:int}> $rows Depth-sorted rows.
+	 * @return array<int,array{id:int,depth:int}>
+	 */
+	private static function order_rows_by_template_refs( array $rows ) {
+		$present = [];
+		foreach ( $rows as $r ) {
+			$present[ (int) $r['id'] ] = true;
+		}
+		$deps = [];
+		foreach ( array_keys( $present ) as $id ) {
+			$refs = self::template_ref_ids( $id );
+			$deps[ $id ] = array_values(
+				array_filter(
+					$refs,
+					static function ( $d ) use ( $present, $id ) {
+						return isset( $present[ (int) $d ] ) && (int) $d !== (int) $id;
+					}
+				)
+			);
+		}
+
+		$order   = [];
+		$visited = [];
+		$visit   = static function ( $id ) use ( &$visit, &$order, &$visited, $deps ) {
+			$id = (int) $id;
+			if ( isset( $visited[ $id ] ) ) {
+				return;
+			}
+			$visited[ $id ] = true; // 先标记再递归，打断潜在环。
+			foreach ( ( isset( $deps[ $id ] ) ? $deps[ $id ] : [] ) as $d ) {
+				$visit( $d );
+			}
+			$order[] = $id;
+		};
+		foreach ( array_keys( $present ) as $id ) {
+			$visit( $id );
+		}
+
+		$row_by_id = [];
+		foreach ( $rows as $r ) {
+			$row_by_id[ (int) $r['id'] ] = $r;
+		}
+		$out  = [];
+		$seen = [];
+		foreach ( $order as $id ) {
+			if ( isset( $row_by_id[ $id ] ) && ! isset( $seen[ $id ] ) ) {
+				$out[]       = $row_by_id[ $id ];
+				$seen[ $id ] = true;
+			}
+		}
+		foreach ( $rows as $r ) {
+			if ( ! isset( $seen[ (int) $r['id'] ] ) ) {
+				$out[] = $r;
+			}
+		}
+		return $out;
 	}
 
 	/**
