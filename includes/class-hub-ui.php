@@ -722,9 +722,7 @@ class Heb_Product_Publisher_Hub_UI {
 		$sid     = isset( $site['id'] ) ? (string) $site['id'] : '';
 		$label   = isset( $site['label'] ) ? (string) $site['label'] : $sid;
 		$url     = isset( $site['url'] ) ? (string) $site['url'] : '';
-		$slug_strategy = isset( $site['slug_strategy'] ) && in_array( $site['slug_strategy'], [ 'source', 'localized' ], true )
-			? $site['slug_strategy']
-			: 'localized';
+		$slug_strategy = Heb_Product_Publisher_Admin_Settings::slug_strategy_for_site( $site );
 
 		$target_locale = isset( $site['locale_override'] ) && '' !== $site['locale_override']
 			? $site['locale_override']

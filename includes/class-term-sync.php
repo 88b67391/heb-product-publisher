@@ -4,7 +4,7 @@
  *
  * 与产品分发不同的两个核心点：
  *  1. payload 极简：name / description / slug fallback / parent_source_term_id
- *  2. slug 也走 AI 翻译（单独短调用），让目标站 URL 用本地化语言
+ *  2. slug_strategy=localized 时 slug 走 AI 翻译；source 时沿用源站英文 slug
  *     旧 slug 自动加入 `_heb_pp_old_slugs` 用于 301 redirect 保持 SEO 信号
  *
  * @package HebProductPublisher
@@ -61,10 +61,11 @@ class Heb_Product_Publisher_Term_Sync {
 	 * @param array<string,mixed>              $payload    Source payload.
 	 * @param string                           $src_locale Source locale.
 	 * @param string                           $dst_locale Target locale.
-	 * @param Heb_Product_Publisher_Translator $translator Translator instance.
+	 * @param Heb_Product_Publisher_Translator $translator     Translator instance.
+	 * @param string                           $slug_strategy  source|localized.
 	 * @return array{payload: array<string,mixed>, stats: array<string,mixed>, errors: array<int,string>}
 	 */
-	public function translate_payload( array $payload, $src_locale, $dst_locale, Heb_Product_Publisher_Translator $translator ) {
+	public function translate_payload( array $payload, $src_locale, $dst_locale, Heb_Product_Publisher_Translator $translator, $slug_strategy = '' ) {
 		$stats  = [ 'strings' => 0, 'translated' => 0, 'batches' => 0 ];
 		$errors = [];
 
@@ -90,10 +91,12 @@ class Heb_Product_Publisher_Term_Sync {
 			$payload['description'] = (string) $result['payload']['description'];
 		}
 
-		// slug 单独走一个 prompt，要求模型输出 URL-friendly 本地化 slug。
-		$translated_slug = $this->translate_slug( (string) $payload['name'], $src_locale, $dst_locale );
-		if ( '' !== $translated_slug ) {
-			$payload['slug_translated'] = $translated_slug;
+		if ( 'source' !== $slug_strategy ) {
+			// slug 单独走一个 prompt，要求模型输出 URL-friendly 本地化 slug。
+			$translated_slug = $this->translate_slug( (string) $payload['name'], $src_locale, $dst_locale );
+			if ( '' !== $translated_slug ) {
+				$payload['slug_translated'] = $translated_slug;
+			}
 		}
 
 		return [ 'payload' => $payload, 'stats' => $stats, 'errors' => $errors ];
@@ -208,10 +211,13 @@ class Heb_Product_Publisher_Term_Sync {
 			$target_locale = isset( $info['locale'] ) ? (string) $info['locale'] : '';
 		}
 
-		// 1) 翻译 name/description + 生成本地化 slug。
-		$translated = $this->translate_payload( $basepayload, $source_locale, $target_locale, $translator );
+		$slug_strategy = Heb_Product_Publisher_Admin_Settings::slug_strategy_for_site( $site );
+
+		// 1) 翻译 name/description；localized 时再 AI 生成本地化 slug。
+		$translated = $this->translate_payload( $basepayload, $source_locale, $target_locale, $translator, $slug_strategy );
 		$payload    = $translated['payload'];
 		$errors     = $translated['errors'];
+		$payload['slug_strategy'] = $slug_strategy;
 
 		$strict_abort = Heb_Product_Publisher_Translator::strict_abort_reason( $errors );
 		if ( null !== $strict_abort ) {

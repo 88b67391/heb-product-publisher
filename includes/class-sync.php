@@ -41,7 +41,7 @@ class Heb_Product_Publisher_Sync {
 			// Elementor image shape：{ id: int, url: string, alt?, source?, size? }
 			// 整个节点替换为 transport token，避免子节点被翻译器扫到。
 			if ( self::looks_like_elementor_image( $value ) ) {
-				$src_url = isset( $value['url'] ) ? (string) $value['url'] : '';
+				$src_url = isset( $value['url'] ) ? self::normalize_media_url( (string) $value['url'] ) : '';
 				if ( '' !== $src_url ) {
 					return [
 						'__heb_media'  => 'elementor_image',
@@ -74,15 +74,22 @@ class Heb_Product_Publisher_Sync {
 			return false;
 		}
 		$url = $value['url'];
-		if ( ! is_string( $url ) || ! preg_match( '#^https?://#i', $url ) ) {
+		if ( ! is_string( $url ) || '' === $url ) {
 			return false;
 		}
-		// 媒体库路径：即使没有 id 字段也视为图片（常见于 background_image）。
-		if ( preg_match( '#/wp-content/uploads/#i', $url ) ) {
+		if ( preg_match( '#^https?://#i', $url ) ) {
+			// 媒体库路径：即使没有 id 字段也视为图片（常见于 background_image）。
+			if ( preg_match( '#/wp-content/uploads/#i', $url ) ) {
+				return true;
+			}
+		} elseif ( preg_match( '#^/?wp-content/uploads/#i', $url ) ) {
 			return true;
 		}
-		if ( ! isset( $value['id'] ) ) {
+		if ( ! preg_match( '#^https?://#i', $url ) && ! preg_match( '#^/?wp-content/uploads/#i', $url ) ) {
 			return false;
+		}
+		if ( ! isset( $value['id'] ) ) {
+			return preg_match( '#/wp-content/uploads/#i', $url ) || preg_match( '#^/?wp-content/uploads/#i', $url );
 		}
 		// id 必须看起来像 attachment ID 或者空字符串（来自 hover image 等可选项）。
 		$id = $value['id'];
@@ -93,6 +100,29 @@ class Heb_Product_Publisher_Sync {
 			return true;
 		}
 		return false;
+	}
+
+	/**
+	 * 相对 uploads 路径 → 绝对 URL，便于子站 sideload。
+	 *
+	 * @param string $url Media URL or path.
+	 * @return string
+	 */
+	public static function normalize_media_url( $url ) {
+		$url = trim( (string) $url );
+		if ( '' === $url ) {
+			return '';
+		}
+		if ( preg_match( '#^https?://#i', $url ) ) {
+			return $url;
+		}
+		if ( '/' === $url[0] ) {
+			return home_url( $url );
+		}
+		if ( preg_match( '#^wp-content/uploads/#i', $url ) ) {
+			return home_url( '/' . ltrim( $url, '/' ) );
+		}
+		return $url;
 	}
 
 	/**

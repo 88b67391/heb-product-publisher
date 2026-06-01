@@ -201,7 +201,7 @@ class Heb_Product_Publisher_Translator {
 	 * @param array<string,mixed> $translated Translated settings.
 	 * @return array<string,mixed>
 	 */
-	private function merge_elementor_settings_deep( array $original, array $translated ) {
+	private function merge_elementor_settings_deep( array $original, array $translated, $in_repeater = false ) {
 		$out = $original;
 		foreach ( $translated as $k => $tv ) {
 			if ( ! is_string( $k ) || ! array_key_exists( $k, $original ) ) {
@@ -211,11 +211,12 @@ class Heb_Product_Publisher_Translator {
 				continue;
 			}
 			$ov = $original[ $k ];
-			if ( $this->is_elementor_translatable_setting_key( $k ) ) {
+			if ( $in_repeater || $this->is_elementor_translatable_setting_key( $k ) ) {
 				if ( is_string( $tv ) ) {
-					$out[ $k ] = $this->sanitize_elementor_html_setting( $k, $tv );
+					$orig_html = is_string( $ov ) ? $ov : '';
+					$out[ $k ] = $this->sanitize_elementor_html_setting( $k, $tv, $orig_html );
 				} elseif ( is_array( $tv ) && is_array( $ov ) ) {
-					$out[ $k ] = $this->merge_elementor_settings_deep( $ov, $tv );
+					$out[ $k ] = $this->merge_elementor_settings_deep( $ov, $tv, $in_repeater );
 				}
 				continue;
 			}
@@ -224,7 +225,7 @@ class Heb_Product_Publisher_Translator {
 				continue;
 			}
 			if ( is_array( $tv ) && is_array( $ov ) ) {
-				$out[ $k ] = $this->merge_elementor_settings_deep( $ov, $tv );
+				$out[ $k ] = $this->merge_elementor_settings_deep( $ov, $tv, $in_repeater );
 			}
 		}
 		return $out;
@@ -243,7 +244,7 @@ class Heb_Product_Publisher_Translator {
 				continue;
 			}
 			$trans_item    = isset( $translated[ $idx ] ) && is_array( $translated[ $idx ] ) ? $translated[ $idx ] : [];
-			$out[ $idx ]   = $this->merge_elementor_settings_deep( $orig_item, $trans_item );
+			$out[ $idx ]   = $this->merge_elementor_settings_deep( $orig_item, $trans_item, true );
 		}
 		return $out;
 	}
@@ -291,6 +292,16 @@ class Heb_Product_Publisher_Translator {
 				'footer_text',
 				'header_text',
 				'ribbon_title',
+				'heading',
+				'sub_heading',
+				'highlighted_text',
+				'rotating_text',
+				'primary_text',
+				'secondary_text',
+				'cta_text',
+				'btn_text',
+				'slide_heading',
+				'slide_description',
 				'testimonial_content',
 				'testimonial_name',
 				'testimonial_job',
@@ -356,19 +367,37 @@ class Heb_Product_Publisher_Translator {
 	}
 
 	/**
-	 * 去掉 editor HTML 里的 inline 字号/行高，避免覆盖 widget Typography 控件。
+	 * 清理 editor HTML 里 AI 误加的超大 inline 字号，保留正常排版。
 	 *
-	 * @param string $key  Setting key.
-	 * @param string $html HTML content.
+	 * @param string $key           Setting key.
+	 * @param string $html          Translated HTML.
+	 * @param string $original_html Source HTML (optional).
 	 * @return string
 	 */
-	private function sanitize_elementor_html_setting( $key, $html ) {
+	private function sanitize_elementor_html_setting( $key, $html, $original_html = '' ) {
 		if ( ! in_array( $key, [ 'editor', 'html', 'content', 'tab_content', 'description' ], true ) ) {
 			return $html;
 		}
-		$html = preg_replace( '/\s*font-size\s*:\s*[^;"\'\s]+;?/i', '', $html );
-		$html = preg_replace( '/\s*line-height\s*:\s*[^;"\'\s]+;?/i', '', $html );
-		$html = preg_replace( '/\s*font-family\s*:\s*[^;"\'\s]+;?/i', '', $html );
+		$html = preg_replace_callback(
+			'/\s*font-size\s*:\s*([^;"\'\s]+);?/i',
+			static function ( $m ) {
+				if ( preg_match( '/(\d+)/', (string) $m[1], $n ) && (int) $n[1] > 36 ) {
+					return '';
+				}
+				return $m[0];
+			},
+			$html
+		);
+		$html = preg_replace_callback(
+			'/\s*line-height\s*:\s*([^;"\'\s]+);?/i',
+			static function ( $m ) {
+				if ( preg_match( '/(\d+)/', (string) $m[1], $n ) && (int) $n[1] > 80 ) {
+					return '';
+				}
+				return $m[0];
+			},
+			$html
+		);
 		return is_string( $html ) ? $html : '';
 	}
 
@@ -397,7 +426,32 @@ class Heb_Product_Publisher_Translator {
 		if ( $this->is_elementor_translatable_setting_key( $key ) ) {
 			return true;
 		}
-		return self::is_elementor_repeater_container_key( $key );
+		if ( self::is_elementor_repeater_container_key( $key ) ) {
+			return true;
+		}
+		if ( $this->is_inside_elementor_repeater_row( $path ) ) {
+			return ! $this->should_skip_key( $key, $path ) && ! $this->is_elementor_style_key( $key, $path );
+		}
+		return false;
+	}
+
+	/**
+	 * 路径是否在 Elementor repeater 行内（如 settings.slides.0.heading）。
+	 *
+	 * @param string $path Dot path.
+	 * @return bool
+	 */
+	private function is_inside_elementor_repeater_row( $path ) {
+		$containers = array_map(
+			static function ( $k ) {
+				return preg_quote( (string) $k, '/' );
+			},
+			self::elementor_repeater_container_keys()
+		);
+		if ( empty( $containers ) ) {
+			return false;
+		}
+		return (bool) preg_match( '/\.settings\.(?:' . implode( '|', $containers ) . ')\.\d+\./', $path );
 	}
 
 	/**
@@ -585,8 +639,9 @@ class Heb_Product_Publisher_Translator {
 					continue;
 				}
 				$applied = $this->apply_strings( $v, $child, $map );
-				if ( $this->is_elementor_translatable_setting_key( $key ) && is_string( $applied ) ) {
-					$applied = $this->sanitize_elementor_html_setting( $key, $applied );
+				if ( is_string( $applied ) && is_string( $v )
+					&& ( $this->is_elementor_translatable_setting_key( $key ) || $this->is_inside_elementor_repeater_row( $child ) ) ) {
+					$applied = $this->sanitize_elementor_html_setting( $key, $applied, $v );
 				}
 				$out[ $k ] = $applied;
 			}

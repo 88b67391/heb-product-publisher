@@ -461,9 +461,9 @@ class Heb_Product_Publisher_Admin_Settings {
 			$url      = isset( $row['url'] ) ? esc_url_raw( trim( (string) $row['url'] ) ) : '';
 			$secret   = isset( $row['receiver_secret'] ) ? sanitize_text_field( (string) $row['receiver_secret'] ) : '';
 			$locale   = isset( $row['locale_override'] ) ? preg_replace( '/[^A-Za-z0-9_\-]/', '', (string) $row['locale_override'] ) : '';
-			$strategy = isset( $row['slug_strategy'] ) ? sanitize_key( (string) $row['slug_strategy'] ) : 'localized';
+			$strategy = isset( $row['slug_strategy'] ) ? sanitize_key( (string) $row['slug_strategy'] ) : self::default_slug_strategy();
 			if ( ! in_array( $strategy, [ 'source', 'localized' ], true ) ) {
-				$strategy = 'localized';
+				$strategy = self::default_slug_strategy();
 			}
 			$timeout = isset( $row['timeout'] ) ? (int) $row['timeout'] : 0;
 			if ( $timeout < 30 || $timeout > 1200 ) {
@@ -492,6 +492,29 @@ class Heb_Product_Publisher_Admin_Settings {
 			];
 		}
 		return $out;
+	}
+
+	/**
+	 * 默认 slug 策略：沿用源站英文 slug，多语言站 URL 一致。
+	 *
+	 * @return string source|localized
+	 */
+	public static function default_slug_strategy() {
+		return (string) apply_filters( 'heb_pp_default_slug_strategy', 'source' );
+	}
+
+	/**
+	 * 读取单个远端站点的 slug 策略。
+	 *
+	 * @param array<string,mixed> $site Site row.
+	 * @return string source|localized
+	 */
+	public static function slug_strategy_for_site( array $site ) {
+		$strategy = isset( $site['slug_strategy'] ) ? sanitize_key( (string) $site['slug_strategy'] ) : '';
+		if ( ! in_array( $strategy, [ 'source', 'localized' ], true ) ) {
+			$strategy = self::default_slug_strategy();
+		}
+		return (string) apply_filters( 'heb_pp_site_slug_strategy', $strategy, $site );
 	}
 
 	/**
@@ -881,7 +904,7 @@ class Heb_Product_Publisher_Admin_Settings {
 					</thead>
 					<tbody id="heb-pp-sites-body">
 						<?php if ( empty( $sites ) ) : ?>
-							<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '', 'slug_strategy' => 'localized', 'timeout' => 0 ], 0 ); ?>
+							<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '', 'slug_strategy' => Heb_Product_Publisher_Admin_Settings::default_slug_strategy(), 'timeout' => 0 ], 0 ); ?>
 						<?php else : ?>
 							<?php foreach ( $sites as $i => $site ) : ?>
 								<?php $this->render_site_row( $site, $i ); ?>
@@ -979,7 +1002,7 @@ class Heb_Product_Publisher_Admin_Settings {
 			</form>
 
 			<template id="heb-pp-site-row-tpl">
-				<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '', 'slug_strategy' => 'localized', 'timeout' => 0 ], '__INDEX__' ); ?>
+				<?php $this->render_site_row( [ 'id' => '', 'label' => '', 'url' => '', 'receiver_secret' => '', 'locale_override' => '', 'slug_strategy' => Heb_Product_Publisher_Admin_Settings::default_slug_strategy(), 'timeout' => 0 ], '__INDEX__' ); ?>
 			</template>
 		</div>
 		<?php
@@ -993,9 +1016,7 @@ class Heb_Product_Publisher_Admin_Settings {
 	 */
 	private function render_site_row( $site, $idx ) {
 		$base     = self::OPT_REMOTE_SITES . '[' . $idx . ']';
-		$strategy = isset( $site['slug_strategy'] ) && in_array( (string) $site['slug_strategy'], [ 'source', 'localized' ], true )
-			? (string) $site['slug_strategy']
-			: 'localized';
+		$strategy = Heb_Product_Publisher_Admin_Settings::slug_strategy_for_site( is_array( $site ) ? $site : [] );
 		?>
 		<tr class="heb-pp-site-row">
 			<td>
@@ -1013,11 +1034,11 @@ class Heb_Product_Publisher_Admin_Settings {
 			</td>
 			<td>
 				<select name="<?php echo esc_attr( $base ); ?>[slug_strategy]" class="heb-pp-slug-strategy">
-					<option value="localized" <?php selected( $strategy, 'localized' ); ?>><?php esc_html_e( '本地化（推荐）', 'heb-product-publisher' ); ?></option>
-					<option value="source" <?php selected( $strategy, 'source' ); ?>><?php esc_html_e( '沿用源站英文 slug', 'heb-product-publisher' ); ?></option>
+					<option value="source" <?php selected( $strategy, 'source' ); ?>><?php esc_html_e( '沿用源站英文 slug（推荐）', 'heb-product-publisher' ); ?></option>
+					<option value="localized" <?php selected( $strategy, 'localized' ); ?>><?php esc_html_e( '本地化 slug', 'heb-product-publisher' ); ?></option>
 				</select>
 				<p class="description" style="margin:4px 0 0;font-size:11px;">
-					<?php esc_html_e( '"本地化"：目标站根据翻译后标题生成 slug（SEO 更友好）；"源站"：保持英文 URL。', 'heb-product-publisher' ); ?>
+					<?php esc_html_e( '推荐沿用源站英文 slug：各语言站 URL 一致，便于 hreflang 与跨站跳转。本地化则按翻译标题生成 slug。', 'heb-product-publisher' ); ?>
 				</p>
 			</td>
 			<td>

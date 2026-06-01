@@ -842,9 +842,17 @@ class Heb_Product_Publisher_Receiver {
 		}
 		$description = isset( $body['description'] ) ? wp_kses_post( (string) $body['description'] ) : '';
 
+		$slug_strategy   = isset( $body['slug_strategy'] ) ? sanitize_key( (string) $body['slug_strategy'] ) : Heb_Product_Publisher_Admin_Settings::default_slug_strategy();
+		if ( ! in_array( $slug_strategy, [ 'source', 'localized' ], true ) ) {
+			$slug_strategy = Heb_Product_Publisher_Admin_Settings::default_slug_strategy();
+		}
 		$translated_slug = isset( $body['slug_translated'] ) ? sanitize_title( (string) $body['slug_translated'] ) : '';
 		$fallback_slug   = isset( $body['slug_fallback'] ) ? sanitize_title( (string) $body['slug_fallback'] ) : '';
-		$new_slug        = '' !== $translated_slug ? $translated_slug : ( '' !== $fallback_slug ? $fallback_slug : sanitize_title( $name ) );
+		if ( 'source' === $slug_strategy ) {
+			$new_slug = '' !== $fallback_slug ? $fallback_slug : sanitize_title( $name );
+		} else {
+			$new_slug = '' !== $translated_slug ? $translated_slug : ( '' !== $fallback_slug ? $fallback_slug : sanitize_title( $name ) );
+		}
 
 		// 1) 反查已存：先按 source_term_id meta，找不到再按 slug fallback。
 		$existing_id = $this->find_term_by_source( $taxonomy, $source_term_id, $source_site );
@@ -1369,9 +1377,9 @@ class Heb_Product_Publisher_Receiver {
 
 		$title         = isset( $body['title'] ) ? sanitize_text_field( (string) $body['title'] ) : '';
 		$slug          = isset( $body['slug'] ) ? sanitize_title( (string) $body['slug'] ) : '';
-		$slug_strategy = isset( $body['slug_strategy'] ) ? sanitize_key( (string) $body['slug_strategy'] ) : 'localized';
+		$slug_strategy = isset( $body['slug_strategy'] ) ? sanitize_key( (string) $body['slug_strategy'] ) : Heb_Product_Publisher_Admin_Settings::default_slug_strategy();
 		if ( ! in_array( $slug_strategy, [ 'source', 'localized' ], true ) ) {
-			$slug_strategy = 'localized';
+			$slug_strategy = Heb_Product_Publisher_Admin_Settings::default_slug_strategy();
 		}
 		$content = isset( $body['content'] ) ? wp_kses_post( (string) $body['content'] ) : '';
 		$excerpt = isset( $body['excerpt'] ) ? sanitize_textarea_field( (string) $body['excerpt'] ) : '';
@@ -1466,6 +1474,15 @@ class Heb_Product_Publisher_Receiver {
 		}
 
 		if ( $existing_id > 0 ) {
+			$current_slug = get_post_field( 'post_name', $existing_id );
+			if ( is_string( $current_slug ) && '' !== $current_slug && $current_slug !== $slug ) {
+				$old = get_post_meta( $existing_id, '_heb_pp_old_slugs', true );
+				$old = is_array( $old ) ? $old : [];
+				if ( ! in_array( $current_slug, $old, true ) ) {
+					$old[] = $current_slug;
+				}
+				update_post_meta( $existing_id, '_heb_pp_old_slugs', array_values( $old ) );
+			}
 			$postarr['ID'] = $existing_id;
 			$post_id       = wp_update_post( wp_slash( $postarr ), true );
 		} else {
@@ -1549,7 +1566,7 @@ class Heb_Product_Publisher_Receiver {
 		$bootstrap_ctx = ! empty( $body['bootstrap_context'] );
 		if ( $queued > 0 && class_exists( 'Heb_Product_Publisher_Async_Media' ) ) {
 			if ( $bootstrap_ctx ) {
-				Heb_Product_Publisher_Async_Media::drain_post( $post_id, 12 );
+				Heb_Product_Publisher_Async_Media::drain_post( $post_id, 20 );
 				$progress      = Heb_Product_Publisher_Async_Media::progress( $post_id );
 				$queued        = (int) ( $progress['pending'] ?? 0 );
 			} else {
@@ -2095,7 +2112,8 @@ class Heb_Product_Publisher_Receiver {
 	 *                             调用方应把它交给 Async_Media::enqueue() 排队。
 	 */
 	private function apply_elementor_payload( $post_id, array $body ) {
-		$pending = []; // 收集所有 elementor_image 远端 URL，REST 完后异步 sideload。
+		$pending     = []; // 收集所有 elementor_image 远端 URL，REST 完后异步 sideload。
+		$source_site = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
 
 		$has_data = isset( $body['elementor_data'] ) && is_array( $body['elementor_data'] ) && ! empty( $body['elementor_data'] );
 
@@ -2103,6 +2121,9 @@ class Heb_Product_Publisher_Receiver {
 			$decoded_data = $this->decode_acf_from_transport( $body['elementor_data'], $pending );
 			if ( ! is_array( $decoded_data ) ) {
 				$decoded_data = [];
+			}
+			if ( '' !== $source_site ) {
+				$decoded_data = $this->remap_elementor_elements_tree( $decoded_data, $source_site );
 			}
 			$json = wp_json_encode( $decoded_data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 			if ( is_string( $json ) ) {
@@ -2113,6 +2134,9 @@ class Heb_Product_Publisher_Receiver {
 		if ( isset( $body['elementor_page_settings'] ) && is_array( $body['elementor_page_settings'] ) ) {
 			$settings = $this->decode_acf_from_transport( $body['elementor_page_settings'], $pending );
 			if ( is_array( $settings ) ) {
+				if ( '' !== $source_site ) {
+					$settings = $this->remap_elementor_settings( $settings, $source_site );
+				}
 				update_post_meta( $post_id, '_elementor_page_settings', $settings );
 			}
 		}
@@ -2132,6 +2156,12 @@ class Heb_Product_Publisher_Receiver {
 		if ( ! empty( $body['elementor_extra_meta'] ) && is_array( $body['elementor_extra_meta'] ) ) {
 			$decoded_extra = $this->decode_acf_from_transport( $body['elementor_extra_meta'], $pending );
 			if ( is_array( $decoded_extra ) ) {
+				if ( '' !== $source_site && isset( $decoded_extra['_elementor_conditions'] ) ) {
+					$decoded_extra['_elementor_conditions'] = $this->remap_elementor_conditions(
+						$decoded_extra['_elementor_conditions'],
+						$source_site
+					);
+				}
 				foreach ( $decoded_extra as $meta_key => $meta_value ) {
 					if ( ! is_string( $meta_key ) || '' === $meta_key ) {
 						continue;
@@ -2162,5 +2192,158 @@ class Heb_Product_Publisher_Receiver {
 		}
 
 		return array_values( array_unique( array_filter( $pending, 'is_string' ) ) );
+	}
+
+	/**
+	 * 把主站 post ID 反查为子站本地 ID（仅当存在 source 映射时替换）。
+	 *
+	 * @param mixed  $id          Candidate id.
+	 * @param string $source_site Source site host.
+	 * @return mixed
+	 */
+	private function maybe_remap_source_post_id( $id, $source_site ) {
+		if ( ! is_numeric( $id ) ) {
+			return $id;
+		}
+		$source_id = (int) $id;
+		if ( $source_id <= 0 || '' === $source_site ) {
+			return $id;
+		}
+		foreach ( heb_pp_distributable_post_types() as $pt ) {
+			$local_id = $this->find_by_source( $pt, $source_id, $source_site );
+			if ( $local_id > 0 ) {
+				return $local_id;
+			}
+		}
+		return $id;
+	}
+
+	/**
+	 * Elementor widget settings 里引用 post / template 的字段名。
+	 *
+	 * @return array<int,string>
+	 */
+	private function elementor_post_id_setting_keys() {
+		return (array) apply_filters(
+			'heb_pp_elementor_post_id_setting_keys',
+			[
+				'template_id',
+				'selected_template_id',
+				'loop_item_template_id',
+				'posts_ids',
+				'post__in',
+				'post__not_in',
+				'related_fallback_id',
+			]
+		);
+	}
+
+	/**
+	 * @param string $key Setting key.
+	 * @return bool
+	 */
+	private function is_elementor_post_id_setting_key( $key ) {
+		if ( in_array( $key, $this->elementor_post_id_setting_keys(), true ) ) {
+			return true;
+		}
+		return (bool) preg_match( '/_(ids|id)$/', $key );
+	}
+
+	/**
+	 * 递归 remap Elementor settings 里的 post / template ID。
+	 *
+	 * @param mixed  $settings    Settings node.
+	 * @param string $source_site Source site host.
+	 * @return mixed
+	 */
+	private function remap_elementor_settings( $settings, $source_site ) {
+		if ( ! is_array( $settings ) ) {
+			return $settings;
+		}
+		$out = [];
+		foreach ( $settings as $key => $value ) {
+			if ( is_array( $value ) ) {
+				$out[ $key ] = $this->remap_elementor_settings( $value, $source_site );
+			} else {
+				$out[ $key ] = $value;
+			}
+			if ( ! $this->is_elementor_post_id_setting_key( (string) $key ) ) {
+				continue;
+			}
+			if ( is_array( $out[ $key ] ) ) {
+				foreach ( $out[ $key ] as $idx => $item ) {
+					if ( is_array( $item ) && isset( $item['template_id'] ) ) {
+						$out[ $key ][ $idx ]['template_id'] = $this->maybe_remap_source_post_id( $item['template_id'], $source_site );
+					} else {
+						$out[ $key ][ $idx ] = $this->maybe_remap_source_post_id( $item, $source_site );
+					}
+				}
+				continue;
+			}
+			if ( is_string( $out[ $key ] ) && preg_match( '/^\d+(?:,\d+)*$/', $out[ $key ] ) ) {
+				$parts = array_map(
+					'intval',
+					explode( ',', $out[ $key ] )
+				);
+				$parts = array_map(
+					function ( $pid ) use ( $source_site ) {
+						return (int) $this->maybe_remap_source_post_id( $pid, $source_site );
+					},
+					$parts
+				);
+				$out[ $key ] = implode( ',', $parts );
+				continue;
+			}
+			$out[ $key ] = $this->maybe_remap_source_post_id( $out[ $key ], $source_site );
+		}
+		return $out;
+	}
+
+	/**
+	 * 递归 remap Elementor 元素树（section / container / widget）。
+	 *
+	 * @param array<int,mixed> $elements    Elementor nodes.
+	 * @param string           $source_site Source site host.
+	 * @return array<int,mixed>
+	 */
+	private function remap_elementor_elements_tree( array $elements, $source_site ) {
+		foreach ( $elements as $idx => $element ) {
+			if ( ! is_array( $element ) ) {
+				continue;
+			}
+			if ( isset( $element['settings'] ) && is_array( $element['settings'] ) ) {
+				$elements[ $idx ]['settings'] = $this->remap_elementor_settings( $element['settings'], $source_site );
+			}
+			if ( isset( $element['elements'] ) && is_array( $element['elements'] ) ) {
+				$elements[ $idx ]['elements'] = $this->remap_elementor_elements_tree( $element['elements'], $source_site );
+			}
+		}
+		return $elements;
+	}
+
+	/**
+	 * Theme Builder conditions 里 singular 条件可能带具体 post ID，需 remap。
+	 *
+	 * @param mixed  $conditions  Conditions meta value.
+	 * @param string $source_site Source site host.
+	 * @return mixed
+	 */
+	private function remap_elementor_conditions( $conditions, $source_site ) {
+		if ( ! is_array( $conditions ) ) {
+			return $conditions;
+		}
+		$out = [];
+		foreach ( $conditions as $condition ) {
+			if ( is_string( $condition ) && false !== strpos( $condition, '/' ) ) {
+				$parts = explode( '/', $condition );
+				if ( count( $parts ) >= 4 && 'singular' === $parts[1] && is_numeric( $parts[3] ) ) {
+					$parts[3] = (string) $this->maybe_remap_source_post_id( (int) $parts[3], $source_site );
+					$out[]    = implode( '/', $parts );
+					continue;
+				}
+			}
+			$out[] = $condition;
+		}
+		return $out;
 	}
 }

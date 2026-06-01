@@ -1,9 +1,9 @@
 <?php
 /**
- * Term 旧 slug 301 重定向。
+ * Term / Post 旧 slug 301 重定向。
  *
- * 主站再次分发 term 时，目标站若 slug 改了，旧 slug 会写入 `_heb_pp_old_slugs` 数组。
- * 这里在前端 404 时反查这些旧 slug，找到对应 term 就 301 跳到当前永久链接，
+ * 主站再次分发时，目标站若 slug 改了，旧 slug 会写入 `_heb_pp_old_slugs` 数组。
+ * 这里在前端 404 时反查这些旧 slug，找到对应 term 或 post 就 301 跳到当前永久链接，
  * 保住已经被搜索引擎索引或者别处贴出去的链接的 SEO 信号。
  *
  * @package HebProductPublisher
@@ -90,6 +90,43 @@ class Heb_Product_Publisher_Term_Redirect {
 				}
 				wp_safe_redirect( $new_url, 301 );
 				exit;
+			}
+		}
+
+		if ( function_exists( 'heb_pp_distributable_post_types' ) ) {
+			$post_types = heb_pp_distributable_post_types();
+			if ( ! empty( $post_types ) ) {
+				$posts = get_posts(
+					[
+						'post_type'      => $post_types,
+						'post_status'    => 'any',
+						'posts_per_page' => 5,
+						'meta_query'     => [
+							[
+								'key'     => '_heb_pp_old_slugs',
+								'value'   => '"' . $maybe_slug . '"',
+								'compare' => 'LIKE',
+							],
+						],
+					]
+				);
+				if ( is_array( $posts ) ) {
+					foreach ( $posts as $post ) {
+						if ( ! $post instanceof \WP_Post ) {
+							continue;
+						}
+						$old = get_post_meta( $post->ID, '_heb_pp_old_slugs', true );
+						if ( ! is_array( $old ) || ! in_array( $maybe_slug, $old, true ) ) {
+							continue;
+						}
+						$new_url = get_permalink( $post );
+						if ( ! is_string( $new_url ) || '' === $new_url ) {
+							continue;
+						}
+						wp_safe_redirect( $new_url, 301 );
+						exit;
+					}
+				}
 			}
 		}
 	}

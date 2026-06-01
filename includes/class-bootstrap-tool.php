@@ -148,7 +148,7 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 									<span style="display:inline-block;margin-left:1.5em;">
 										<?php
 										$pt_labels = [
-											'elementor_library' => __( 'Elementor 模板（header / footer / archive）', 'heb-product-publisher' ),
+											'elementor_library' => __( 'Elementor 模板（header / footer / archive / loop item）', 'heb-product-publisher' ),
 											'page'              => __( '单页（pages）', 'heb-product-publisher' ),
 											'products'          => __( '产品（products）', 'heb-product-publisher' ),
 											'solutions'         => __( '解决方案（solutions）', 'heb-product-publisher' ),
