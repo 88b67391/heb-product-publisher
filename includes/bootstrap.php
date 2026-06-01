@@ -82,11 +82,18 @@ if ( Heb_Product_Publisher_Admin_Settings::is_hub_mode() ) {
 	Heb_Product_Publisher_Delete_Cascade::instance();
 }
 
-// 兜底：首次启用后访问管理页自动建表。
+// 兜底：访问管理页时自动建表 / 迁移。
+// 插件就地更新（非重新激活）不会触发 activation hook，必须在这里按 DB 版本补跑迁移，
+// 否则新增列（如 strings_elementor / elementor_widgets）写不进去会导致整条日志 INSERT 失败。
 add_action(
 	'admin_init',
 	static function () {
-		if ( class_exists( 'Heb_Product_Publisher_Log' ) && ! Heb_Product_Publisher_Log::table_exists() ) {
+		if ( ! class_exists( 'Heb_Product_Publisher_Log' ) ) {
+			return;
+		}
+		$needs_migration = ! Heb_Product_Publisher_Log::table_exists()
+			|| get_option( Heb_Product_Publisher_Log::DB_VERSION_OPT ) !== Heb_Product_Publisher_Log::DB_VERSION;
+		if ( $needs_migration ) {
 			Heb_Product_Publisher_Log::install();
 		}
 	}

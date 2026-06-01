@@ -70,6 +70,23 @@ class Heb_Product_Publisher_Log {
 	}
 
 	/**
+	 * 当前日志表实际存在的列名（带缓存）。
+	 *
+	 * @return array<int,string>
+	 */
+	public static function existing_columns() {
+		global $wpdb;
+		static $cache = null;
+		if ( null !== $cache ) {
+			return $cache;
+		}
+		$table = self::table();
+		$cols  = $wpdb->get_col( "SHOW COLUMNS FROM {$table}" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$cache = is_array( $cols ) ? array_map( 'strval', $cols ) : [];
+		return $cache;
+	}
+
+	/**
 	 * @return bool
 	 */
 	public static function table_exists() {
@@ -110,6 +127,13 @@ class Heb_Product_Publisher_Log {
 				$data[ $k ] = is_string( $data[ $k ] ) ? substr( $data[ $k ], 0, 4000 ) : '';
 			}
 		}
+
+		// 防御：只写入数据库里真实存在的列，避免某次升级新增列但迁移未跑时整条 INSERT 失败。
+		$columns = self::existing_columns();
+		if ( ! empty( $columns ) ) {
+			$data = array_intersect_key( $data, array_flip( $columns ) );
+		}
+
 		$wpdb->insert( self::table(), $data ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		return (int) $wpdb->insert_id;
 	}
