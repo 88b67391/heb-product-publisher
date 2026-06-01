@@ -84,7 +84,13 @@ class Heb_Product_Publisher_Translator {
 	 */
 	public function translate_payload( array $payload, $src_locale, $dst_locale ) {
 		$errors = [];
-		$stats  = [ 'strings' => 0, 'translated' => 0, 'batches' => 0 ];
+		$stats  = [
+			'strings'           => 0,
+			'translated'        => 0,
+			'batches'           => 0,
+			'strings_elementor' => 0,
+			'strings_meta'      => 0,
+		];
 
 		if ( '' === trim( (string) $dst_locale ) || self::same_language( $src_locale, $dst_locale ) ) {
 			return [ 'payload' => $payload, 'stats' => $stats, 'errors' => $errors ];
@@ -98,6 +104,14 @@ class Heb_Product_Publisher_Translator {
 
 		$strings = [];
 		$this->collect_strings( $payload, '', $strings );
+		foreach ( array_keys( $strings ) as $str_path ) {
+			if ( 0 === strpos( (string) $str_path, 'elementor_data' )
+				|| 0 === strpos( (string) $str_path, 'elementor_page_settings' ) ) {
+				$stats['strings_elementor']++;
+			} else {
+				$stats['strings_meta']++;
+			}
+		}
 		$stats['strings'] = count( $strings );
 
 		if ( empty( $strings ) ) {
@@ -564,6 +578,12 @@ class Heb_Product_Publisher_Translator {
 	private function collect_strings( $value, $path, array &$out ) {
 		if ( is_array( $value ) ) {
 			if ( isset( $value['__heb_media'] ) ) {
+				if ( isset( $value['__heb_alt'] ) && is_string( $value['__heb_alt'] ) ) {
+					$alt_path = '' === $path ? '__heb_alt' : $path . '.__heb_alt';
+					if ( $this->looks_translatable( $value['__heb_alt'] ) ) {
+						$out[ $alt_path ] = $value['__heb_alt'];
+					}
+				}
 				return;
 			}
 			foreach ( $value as $k => $v ) {
@@ -611,6 +631,12 @@ class Heb_Product_Publisher_Translator {
 	private function apply_strings( $value, $path, array $map ) {
 		if ( is_array( $value ) ) {
 			if ( isset( $value['__heb_media'] ) ) {
+				if ( isset( $value['__heb_alt'] ) && is_string( $value['__heb_alt'] ) ) {
+					$alt_path = '' === $path ? '__heb_alt' : $path . '.__heb_alt';
+					if ( isset( $map[ $alt_path ] ) && is_string( $map[ $alt_path ] ) && '' !== $map[ $alt_path ] ) {
+						$value['__heb_alt'] = $map[ $alt_path ];
+					}
+				}
 				return $value;
 			}
 			$out = [];

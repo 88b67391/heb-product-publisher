@@ -352,4 +352,64 @@ class Heb_Product_Publisher_Sync {
 			'twitter_desc'   => '_yoast_wpseo_twitter-description',
 		];
 	}
+
+	/**
+	 * 统计 Elementor 树中的 widget 数量（用于分发日志诊断）。
+	 *
+	 * @param mixed $nodes elementor_data 根数组。
+	 * @return int
+	 */
+	public static function count_elementor_widgets( $nodes ) {
+		if ( ! is_array( $nodes ) ) {
+			return 0;
+		}
+		$count = 0;
+		foreach ( $nodes as $node ) {
+			if ( ! is_array( $node ) ) {
+				continue;
+			}
+			if ( ! empty( $node['widgetType'] ) ) {
+				$count++;
+			}
+			if ( ! empty( $node['elements'] ) && is_array( $node['elements'] ) ) {
+				$count += self::count_elementor_widgets( $node['elements'] );
+			}
+		}
+		return $count;
+	}
+
+	/**
+	 * 扫描 payload 中引用的内嵌 Elementor 模板 ID（[elementor-template id="…"]）。
+	 *
+	 * @param mixed $value 任意节点。
+	 * @return array<int,int>
+	 */
+	public static function find_embedded_elementor_template_ids( $value ) {
+		$ids = [];
+		self::walk_embedded_elementor_template_ids( $value, $ids );
+		$ids = array_values( array_unique( array_filter( array_map( 'intval', $ids ) ) ) );
+		sort( $ids, SORT_NUMERIC );
+		return $ids;
+	}
+
+	/**
+	 * @param mixed              $value 当前值。
+	 * @param array<int,int>     $ids   收集器（引用）。
+	 */
+	private static function walk_embedded_elementor_template_ids( $value, array &$ids ) {
+		if ( is_string( $value ) ) {
+			if ( preg_match_all( '/\[elementor-template[^\]]*\bid=["\']?(\d+)["\']?/i', $value, $m ) ) {
+				foreach ( $m[1] as $id ) {
+					$ids[] = (int) $id;
+				}
+			}
+			return;
+		}
+		if ( ! is_array( $value ) ) {
+			return;
+		}
+		foreach ( $value as $v ) {
+			self::walk_embedded_elementor_template_ids( $v, $ids );
+		}
+	}
 }

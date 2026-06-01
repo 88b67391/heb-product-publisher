@@ -153,6 +153,22 @@ class Heb_Product_Publisher_Log_Admin {
 								</td>
 								<td>
 									<?php echo (int) $row->translated_strings; ?>/<?php echo (int) $row->translated_total; ?>
+									<?php
+									$ew = isset( $row->elementor_widgets ) ? (int) $row->elementor_widgets : 0;
+									$es = isset( $row->strings_elementor ) ? (int) $row->strings_elementor : 0;
+									if ( in_array( $row->post_type, [ 'page', 'elementor_library' ], true ) || $ew > 0 || $es > 0 ) :
+										?>
+										<div class="description" style="margin:0;font-size:11px;line-height:1.3" title="<?php esc_attr_e( 'Elementor 控件数 / 收集到的 Elementor 可译字符串数', 'heb-product-publisher' ); ?>">
+											<?php
+											printf(
+												/* translators: 1: elementor widget count, 2: elementor translatable strings */
+												esc_html__( 'Elementor %1$d 控件 · %2$d 条', 'heb-product-publisher' ),
+												$ew,
+												$es
+											);
+											?>
+										</div>
+									<?php endif; ?>
 								</td>
 								<td><?php echo (int) $row->duration_ms; ?>ms</td>
 								<td>

@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Heb_Product_Publisher_Log {
 
 	const DB_VERSION_OPT = 'heb_pp_log_db_version';
-	const DB_VERSION     = '1.0.0';
+	const DB_VERSION     = '1.1.0';
 
 	/**
 	 * @return string
@@ -51,6 +51,8 @@ class Heb_Product_Publisher_Log {
 			remote_edit_url TEXT NULL,
 			translated_strings INT NOT NULL DEFAULT 0,
 			translated_total INT NOT NULL DEFAULT 0,
+			strings_elementor INT NOT NULL DEFAULT 0,
+			elementor_widgets INT NOT NULL DEFAULT 0,
 			duration_ms INT NOT NULL DEFAULT 0,
 			user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -96,6 +98,8 @@ class Heb_Product_Publisher_Log {
 			'remote_edit_url'    => '',
 			'translated_strings' => 0,
 			'translated_total'   => 0,
+			'strings_elementor'  => 0,
+			'elementor_widgets'  => 0,
 			'duration_ms'        => 0,
 			'user_id'            => get_current_user_id(),
 			'created_at'         => current_time( 'mysql' ),

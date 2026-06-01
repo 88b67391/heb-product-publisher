@@ -758,6 +758,11 @@ class Heb_Product_Publisher_Hub_UI {
 			$translate_errors = isset( $tr['errors'] ) ? $tr['errors'] : [];
 			$translate_stats  = isset( $tr['stats'] ) ? $tr['stats'] : [];
 		}
+		$translate_stats['elementor_widgets'] = Heb_Product_Publisher_Sync::count_elementor_widgets(
+			isset( $basepayload['elementor_data'] ) && is_array( $basepayload['elementor_data'] )
+				? $basepayload['elementor_data']
+				: []
+		);
 
 		$strict_abort = Heb_Product_Publisher_Translator::strict_abort_reason( $translate_errors );
 		if ( null !== $strict_abort ) {
@@ -839,6 +844,9 @@ class Heb_Product_Publisher_Hub_UI {
 				__( '主站点已写入，子站后台正在异步下载 %d 张 Elementor 图片（不阻塞，可关闭页面）。', 'heb-product-publisher' ),
 				$pending_media
 			);
+		}
+		foreach ( $this->elementor_translate_warnings( $basepayload, $translate_stats ) as $ew ) {
+			$warns[] = $ew;
 		}
 		if ( ! empty( $translate_stats['strings'] ) && isset( $translate_stats['translated'] ) ) {
 			$ratio = (int) $translate_stats['translated'] / max( 1, (int) $translate_stats['strings'] );
@@ -922,6 +930,8 @@ class Heb_Product_Publisher_Hub_UI {
 				'remote_edit_url'    => $edit_url,
 				'translated_strings' => isset( $stats['translated'] ) ? (int) $stats['translated'] : 0,
 				'translated_total'   => isset( $stats['strings'] ) ? (int) $stats['strings'] : 0,
+				'strings_elementor'  => isset( $stats['strings_elementor'] ) ? (int) $stats['strings_elementor'] : 0,
+				'elementor_widgets'  => isset( $stats['elementor_widgets'] ) ? (int) $stats['elementor_widgets'] : 0,
 				'duration_ms'        => (int) $duration_ms,
 			]
 		);
@@ -946,5 +956,50 @@ class Heb_Product_Publisher_Hub_UI {
 			];
 			update_post_meta( $post_id, '_heb_pp_distributions', $distributions );
 		}
+	}
+
+	/**
+	 * Elementor 翻译覆盖不足时的可读提示（避免 4/4 误导为「页面已全部翻译」）。
+	 *
+	 * @param array<string,mixed> $basepayload     源 payload。
+	 * @param array<string,mixed> $translate_stats 翻译统计。
+	 * @return array<int,string>
+	 */
+	private function elementor_translate_warnings( array $basepayload, array $translate_stats ) {
+		$warnings = [];
+		$post_type = isset( $basepayload['post_type'] ) ? (string) $basepayload['post_type'] : '';
+		if ( ! in_array( $post_type, [ 'page', 'elementor_library', 'products', 'solutions' ], true ) ) {
+			return $warnings;
+		}
+
+		$widgets   = isset( $translate_stats['elementor_widgets'] ) ? (int) $translate_stats['elementor_widgets'] : 0;
+		$e_strings = isset( $translate_stats['strings_elementor'] ) ? (int) $translate_stats['strings_elementor'] : 0;
+		$edit_mode = isset( $basepayload['elementor_edit_mode'] ) ? (string) $basepayload['elementor_edit_mode'] : '';
+		$is_builder = 'builder' === $edit_mode;
+
+		if ( $is_builder && 0 === $widgets ) {
+			$warnings[] = __(
+				'本页为 Elementor 编辑，但 _elementor_data 为空：前台可见内容很可能在 Theme Builder 模板（Header/Footer/Single）中，请单独 Bootstrap「Elementor 模板」。',
+				'heb-product-publisher'
+			);
+		} elseif ( $widgets >= 3 && $e_strings < max( 3, (int) floor( $widgets * 0.25 ) ) ) {
+			$warnings[] = sprintf(
+				/* translators: 1: widget count, 2: collected elementor strings */
+				__( 'Elementor 含 %1$d 个控件，但仅收集 %2$d 条可译字符串；若前台仍见英文，请确认 Theme Builder 模板已分发，或检查是否使用 Dynamic Tag / 内嵌模板。', 'heb-product-publisher' ),
+				$widgets,
+				$e_strings
+			);
+		}
+
+		$embedded = Heb_Product_Publisher_Sync::find_embedded_elementor_template_ids( $basepayload );
+		if ( ! empty( $embedded ) ) {
+			$warnings[] = sprintf(
+				/* translators: %s: comma-separated template post IDs */
+				__( '页面内嵌 Elementor 模板 #%s，需单独分发并翻译这些 elementor_library 条目。', 'heb-product-publisher' ),
+				implode( ', #', $embedded )
+			);
+		}
+
+		return $warnings;
 	}
 }
