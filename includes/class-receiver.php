@@ -676,6 +676,34 @@ class Heb_Product_Publisher_Receiver {
 				}
 			}
 
+			foreach ( (array) ( $body['media_refs'] ?? [] ) as $mod_key => $ref ) {
+				$mod_key = sanitize_key( (string) $mod_key );
+				if ( ! in_array( $mod_key, Heb_Product_Publisher_Settings_Sync::media_ref_theme_mods(), true ) || ! is_array( $ref ) ) {
+					$skipped[] = 'media_ref:' . $mod_key . ' (not whitelisted or bad ref)';
+					continue;
+				}
+				$url = isset( $ref['url'] ) ? esc_url_raw( (string) $ref['url'] ) : '';
+				if ( '' === $url || ! wp_http_validate_url( $url ) ) {
+					$skipped[] = 'media_ref:' . $mod_key . ' (missing url)';
+					continue;
+				}
+				try {
+					$local_id = $this->sideload_url( $url );
+					if ( $local_id <= 0 ) {
+						$skipped[] = 'media_ref:' . $mod_key . ' (sideload failed)';
+						continue;
+					}
+					set_theme_mod( $mod_key, $local_id );
+					if ( 'site_icon' === $mod_key ) {
+						update_option( 'site_icon', $local_id );
+					}
+					$applied[] = 'media_ref:' . $mod_key;
+				} catch ( \Throwable $e ) {
+					$skipped[] = 'media_ref:' . $mod_key . ' (error)';
+					$errors[]  = 'media_ref:' . $mod_key . ': ' . $e->getMessage();
+				}
+			}
+
 			$this->post_settings_activation( $applied, $errors, $flush_rewrite );
 
 			if ( empty( $applied ) && ! empty( $errors ) ) {

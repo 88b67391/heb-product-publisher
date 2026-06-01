@@ -123,6 +123,8 @@ class Heb_Product_Publisher_Settings_Sync {
 	/**
 	 * theme_mod 同步时排除的键（菜单/小工具/附件 id 由专门流程处理）。
 	 *
+	 * custom_logo / site_icon 走 {@see media_ref_theme_mods()} + media_refs sideload。
+	 *
 	 * @return array<int,string>
 	 */
 	public static function theme_mod_exclude_keys() {
@@ -135,6 +137,48 @@ class Heb_Product_Publisher_Settings_Sync {
 				'site_icon',
 			]
 		);
+	}
+
+	/**
+	 * 需要 sideload 附件后再写入的 theme_mod（值为 attachment ID）。
+	 *
+	 * @return array<int,string>
+	 */
+	public static function media_ref_theme_mods() {
+		return (array) apply_filters(
+			'heb_pp_settings_media_ref_theme_mods',
+			[
+				'custom_logo',
+				'site_icon',
+			]
+		);
+	}
+
+	/**
+	 * 收集 logo / favicon 等附件引用（URL + 源 attachment id）。
+	 *
+	 * @return array<string,array{source_attachment_id:int,url:string}>
+	 */
+	public static function collect_media_refs() {
+		$out = [];
+		foreach ( self::media_ref_theme_mods() as $mod_key ) {
+			$att_id = (int) get_theme_mod( $mod_key );
+			if ( $att_id <= 0 && 'site_icon' === $mod_key ) {
+				$att_id = (int) get_option( 'site_icon' );
+			}
+			if ( $att_id <= 0 ) {
+				continue;
+			}
+			$url = (string) wp_get_attachment_url( $att_id );
+			if ( '' === $url ) {
+				continue;
+			}
+			$out[ $mod_key ] = [
+				'source_attachment_id' => $att_id,
+				'url'                  => $url,
+			];
+		}
+		return (array) apply_filters( 'heb_pp_settings_media_refs_payload', $out );
 	}
 
 	/**
@@ -152,6 +196,7 @@ class Heb_Product_Publisher_Settings_Sync {
 			'elementor'     => [],
 			'yoast'         => [],
 			'theme_mods'    => [],
+			'media_refs'    => [],
 		];
 		foreach ( self::copy_options() as $opt ) {
 			$payload['copy'][ $opt ] = get_option( $opt );
@@ -183,6 +228,7 @@ class Heb_Product_Publisher_Settings_Sync {
 			}
 		}
 		$payload['theme_mods'] = self::collect_theme_mods();
+		$payload['media_refs'] = self::collect_media_refs();
 		return $payload;
 	}
 

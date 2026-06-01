@@ -73,7 +73,7 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 					'confirmDryRun' => __( 'Dry run 模式：只统计数量并验证连接，不会实际推送。继续？', 'heb-product-publisher' ),
 					'confirmRetry'  => __( '仅重试该 job 中失败的项？', 'heb-product-publisher' ),
 					'confirmCancel' => __( '取消该 Bootstrap job？已完成的任务不会回滚。', 'heb-product-publisher' ),
-					'confirmResendSettings' => __( '仅重发 WordPress 全局设置（含 Elementor/Yoast/theme_mods）到该站点？', 'heb-product-publisher' ),
+					'confirmResendSettings' => __( '仅重发 WordPress 全局设置（含 Logo/Favicon、Elementor/Yoast/theme_mods）到该站点？', 'heb-product-publisher' ),
 					'confirmResendMenus'    => __( '仅重发导航菜单到该站点？', 'heb-product-publisher' ),
 					'confirmResendTemplates' => __( '仅重发 Elementor 模板库（header/footer/archive 等）到该站点？', 'heb-product-publisher' ),
 					'selectPostType'      => __( '请至少勾选一种内容类型。', 'heb-product-publisher' ),
@@ -158,7 +158,7 @@ class Heb_Product_Publisher_Bootstrap_Tool {
 											<label><input type="checkbox" class="heb-pp-bs-scope-pt" data-pt="<?php echo esc_attr( $pt ); ?>" checked /> <?php echo esc_html( $label ); ?></label><br />
 										<?php endforeach; ?>
 									</span>
-									<label><input type="checkbox" id="heb-pp-bs-scope-settings" checked /> <?php esc_html_e( 'WordPress 全局设置（标题、permalinks、首页、Elementor Kit、Yoast、theme_mods）', 'heb-product-publisher' ); ?></label><br />
+									<label><input type="checkbox" id="heb-pp-bs-scope-settings" checked /> <?php esc_html_e( 'WordPress 全局设置（标题、Logo、Favicon、permalinks、首页、Elementor Kit、Yoast、theme_mods）', 'heb-product-publisher' ); ?></label><br />
 									<label><input type="checkbox" id="heb-pp-bs-scope-menus" checked /> <?php esc_html_e( '导航菜单（含菜单项 object 反查）', 'heb-product-publisher' ); ?></label><br />
 									<label><input type="checkbox" id="heb-pp-bs-scope-menu-locations" /> <?php esc_html_e( '同时绑定主题菜单位置（危险：会覆盖子站 nav_menu_locations）', 'heb-product-publisher' ); ?></label><br />
 									<label><input type="checkbox" id="heb-pp-bs-dry-run" /> <?php esc_html_e( 'Dry run（仅探测连接 + 统计数量，不实际推送）', 'heb-product-publisher' ); ?></label>
