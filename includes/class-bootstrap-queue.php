@@ -77,6 +77,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			'scope_post_types'     => heb_pp_distributable_post_types(),
 			'scope_menus'          => true,
 			'scope_settings'       => true,
+			'scope_settings_groups' => Heb_Product_Publisher_Settings_Sync::default_settings_groups(),
 			'scope_menu_locations' => false,
 			'dry_run'              => false,
 			'retry_mode'           => false,
@@ -868,7 +869,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 		if ( ! empty( $opts['scope_menus'] ) ) {
 			$out['menus'] = count( wp_get_nav_menus() );
 		}
-		if ( ! empty( $opts['scope_settings'] ) ) {
+		if ( ! empty( $opts['scope_settings'] ) || ! empty( Heb_Product_Publisher_Settings_Sync::resolve_settings_groups( $opts ) ) ) {
 			$out['settings'] = 1;
 		}
 		return $out;
@@ -1078,7 +1079,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 				$next = $flow[ $next ];
 				continue;
 			}
-			if ( Heb_Product_Publisher_Bootstrap_Status::STAGE_SETTINGS === $next && empty( $opts['scope_settings'] ) ) {
+			if ( Heb_Product_Publisher_Bootstrap_Status::STAGE_SETTINGS === $next && empty( Heb_Product_Publisher_Settings_Sync::resolve_settings_groups( $opts ) ) ) {
 				$next = $flow[ $next ];
 				continue;
 			}

@@ -35,15 +35,24 @@
 			return pts;
 		}
 
+		function collectScopeSettingsGroups() {
+			var groups = [];
+			$('.heb-pp-bs-scope-settings-group:checked').each(function () {
+				groups.push(String($(this).data('group')));
+			});
+			return groups;
+		}
+
 		function startBootstrap() {
 			var siteId = $('#heb-pp-bs-site').val();
 			var dryRun = $('#heb-pp-bs-dry-run').is(':checked');
 			var scopePostTypes = collectScopePostTypes();
+			var scopeSettingsGroups = collectScopeSettingsGroups();
 			if (!siteId) {
 				window.alert(HebPPBootstrap.i18n.selectSite);
 				return;
 			}
-			if (!dryRun && scopePostTypes.length === 0 && !$('#heb-pp-bs-scope-terms').is(':checked') && !$('#heb-pp-bs-scope-settings').is(':checked') && !$('#heb-pp-bs-scope-menus').is(':checked')) {
+			if (!dryRun && scopePostTypes.length === 0 && scopeSettingsGroups.length === 0 && !$('#heb-pp-bs-scope-terms').is(':checked') && !$('#heb-pp-bs-scope-menus').is(':checked')) {
 				window.alert(HebPPBootstrap.i18n.selectPostType);
 				return;
 			}
@@ -64,8 +73,8 @@
 					site_id: siteId,
 					scope_terms: $('#heb-pp-bs-scope-terms').is(':checked') ? 1 : 0,
 					scope_post_types: scopePostTypes,
+					scope_settings_groups: scopeSettingsGroups,
 					scope_menus: $('#heb-pp-bs-scope-menus').is(':checked') ? 1 : 0,
-					scope_settings: $('#heb-pp-bs-scope-settings').is(':checked') ? 1 : 0,
 					scope_menu_locations: $('#heb-pp-bs-scope-menu-locations').is(':checked') ? 1 : 0,
 					dry_run: dryRun ? 1 : 0
 				}
@@ -95,9 +104,11 @@
 			}
 			var msg = scope === 'settings'
 				? HebPPBootstrap.i18n.confirmResendSettings
-				: (scope === 'elementor_library'
-					? HebPPBootstrap.i18n.confirmResendTemplates
-					: HebPPBootstrap.i18n.confirmResendMenus);
+				: (scope === 'settings_identity'
+					? HebPPBootstrap.i18n.confirmResendIdentity
+					: (scope === 'elementor_library'
+						? HebPPBootstrap.i18n.confirmResendTemplates
+						: HebPPBootstrap.i18n.confirmResendMenus));
 			if (!window.confirm(msg)) {
 				return;
 			}
@@ -360,6 +371,7 @@
 		}
 
 		$startBtn.on('click', startBootstrap);
+		$('#heb-pp-bs-resend-identity').on('click', function () { resendScope('settings_identity'); });
 		$('#heb-pp-bs-resend-settings').on('click', function () { resendScope('settings'); });
 		$('#heb-pp-bs-resend-templates').on('click', function () { resendScope('elementor_library'); });
 		$('#heb-pp-bs-resend-menus').on('click', function () { resendScope('menus'); });

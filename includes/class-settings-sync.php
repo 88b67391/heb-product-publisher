@@ -182,11 +182,77 @@ class Heb_Product_Publisher_Settings_Sync {
 	}
 
 	/**
+	 * Bootstrap settings 可单独勾选的分组。
+	 *
+	 * @return array<string,string> group_key => admin label.
+	 */
+	public static function settings_groups() {
+		return (array) apply_filters(
+			'heb_pp_settings_scope_groups',
+			[
+				'identity'   => __( '站点身份（标题、副标题、Logo、Favicon）', 'heb-product-publisher' ),
+				'permalink'  => __( 'Permalinks 与静态首页', 'heb-product-publisher' ),
+				'general'    => __( '常规（时区、日期格式、图片尺寸）', 'heb-product-publisher' ),
+				'elementor'  => __( 'Elementor 全局设置 + Kit', 'heb-product-publisher' ),
+				'yoast'      => __( 'Yoast SEO', 'heb-product-publisher' ),
+				'theme_mods' => __( '主题 Customizer（theme_mods）', 'heb-product-publisher' ),
+			]
+		);
+	}
+
+	/**
+	 * @return array<int,string>
+	 */
+	public static function default_settings_groups() {
+		return array_keys( self::settings_groups() );
+	}
+
+	/**
+	 * @param array<string,mixed> $opts Job opts.
+	 * @return array<int,string>
+	 */
+	public static function resolve_settings_groups( array $opts ) {
+		if ( ! empty( $opts['scope_settings_groups'] ) && is_array( $opts['scope_settings_groups'] ) ) {
+			$allowed = self::default_settings_groups();
+			$out     = [];
+			foreach ( $opts['scope_settings_groups'] as $group ) {
+				$group = sanitize_key( (string) $group );
+				if ( in_array( $group, $allowed, true ) ) {
+					$out[] = $group;
+				}
+			}
+			return array_values( array_unique( $out ) );
+		}
+		if ( ! empty( $opts['scope_settings'] ) ) {
+			return self::default_settings_groups();
+		}
+		return [];
+	}
+
+	/**
+	 * @return array<int,string>
+	 */
+	private static function permalink_copy_options() {
+		return [
+			'permalink_structure',
+			'category_base',
+			'tag_base',
+			'show_on_front',
+		];
+	}
+
+	/**
 	 * 构造 payload。
 	 *
+	 * @param array<int,string> $groups Empty = all groups.
 	 * @return array<string,mixed>
 	 */
-	public static function build_payload() {
+	public static function build_payload( array $groups = [] ) {
+		if ( empty( $groups ) ) {
+			$groups = self::default_settings_groups();
+		}
+		$pick = array_flip( $groups );
+
 		$payload = [
 			'source_site'   => (string) wp_parse_url( home_url(), PHP_URL_HOST ),
 			'source_locale' => Heb_Product_Publisher_Admin_Settings::source_locale(),
@@ -198,38 +264,72 @@ class Heb_Product_Publisher_Settings_Sync {
 			'theme_mods'    => [],
 			'media_refs'    => [],
 		];
-		foreach ( self::copy_options() as $opt ) {
-			$payload['copy'][ $opt ] = get_option( $opt );
-		}
-		foreach ( self::translate_options() as $opt ) {
-			$v = get_option( $opt );
-			if ( is_string( $v ) && '' !== trim( $v ) ) {
-				$payload['translate'][ $opt ] = $v;
+
+		if ( isset( $pick['general'] ) || isset( $pick['permalink'] ) ) {
+			$permalink_opts = array_flip( self::permalink_copy_options() );
+			foreach ( self::copy_options() as $opt ) {
+				if ( isset( $permalink_opts[ $opt ] ) ) {
+					if ( isset( $pick['permalink'] ) ) {
+						$payload['copy'][ $opt ] = get_option( $opt );
+					}
+					continue;
+				}
+				if ( isset( $pick['general'] ) ) {
+					$payload['copy'][ $opt ] = get_option( $opt );
+				}
 			}
 		}
-		foreach ( self::post_ref_options() as $opt ) {
-			$pid = (int) get_option( $opt );
-			if ( $pid > 0 ) {
-				$payload['post_refs'][ $opt ] = [
-					'source_post_id' => $pid,
-				];
+
+		if ( isset( $pick['identity'] ) ) {
+			foreach ( self::translate_options() as $opt ) {
+				$v = get_option( $opt );
+				if ( is_string( $v ) && '' !== trim( $v ) ) {
+					$payload['translate'][ $opt ] = $v;
+				}
+			}
+			$payload['media_refs'] = self::collect_media_refs();
+		}
+
+		if ( isset( $pick['permalink'] ) || isset( $pick['elementor'] ) ) {
+			foreach ( self::post_ref_options() as $opt ) {
+				if ( 'elementor_active_kit' === $opt && ! isset( $pick['elementor'] ) ) {
+					continue;
+				}
+				if ( in_array( $opt, [ 'page_on_front', 'page_for_posts' ], true ) && ! isset( $pick['permalink'] ) ) {
+					continue;
+				}
+				$pid = (int) get_option( $opt );
+				if ( $pid > 0 ) {
+					$payload['post_refs'][ $opt ] = [
+						'source_post_id' => $pid,
+					];
+				}
 			}
 		}
-		foreach ( self::elementor_options() as $opt ) {
-			$v = get_option( $opt );
-			if ( null !== $v && false !== $v && '' !== $v ) {
-				$payload['elementor'][ $opt ] = $v;
+
+		if ( isset( $pick['elementor'] ) ) {
+			foreach ( self::elementor_options() as $opt ) {
+				$v = get_option( $opt );
+				if ( null !== $v && false !== $v && '' !== $v ) {
+					$payload['elementor'][ $opt ] = $v;
+				}
 			}
 		}
-		foreach ( self::yoast_options() as $opt ) {
-			$v = get_option( $opt );
-			if ( is_array( $v ) && ! empty( $v ) ) {
-				$payload['yoast'][ $opt ] = $v;
+
+		if ( isset( $pick['yoast'] ) ) {
+			foreach ( self::yoast_options() as $opt ) {
+				$v = get_option( $opt );
+				if ( is_array( $v ) && ! empty( $v ) ) {
+					$payload['yoast'][ $opt ] = $v;
+				}
 			}
 		}
-		$payload['theme_mods'] = self::collect_theme_mods();
-		$payload['media_refs'] = self::collect_media_refs();
-		return $payload;
+
+		if ( isset( $pick['theme_mods'] ) ) {
+			$payload['theme_mods'] = self::collect_theme_mods();
+		}
+
+		return (array) apply_filters( 'heb_pp_settings_payload', $payload, $groups );
 	}
 
 	/**

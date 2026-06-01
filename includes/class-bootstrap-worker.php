@@ -306,7 +306,9 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 				throw new \RuntimeException( 'site config missing' );
 			}
 			$t0 = $this->begin_item( $job_id, 'settings', 0, __( 'WordPress 全局设置', 'heb-product-publisher' ) );
-			$payload    = Heb_Product_Publisher_Settings_Sync::build_payload();
+			$opts       = isset( $rec['opts'] ) && is_array( $rec['opts'] ) ? $rec['opts'] : [];
+			$groups     = Heb_Product_Publisher_Settings_Sync::resolve_settings_groups( $opts );
+			$payload    = Heb_Product_Publisher_Settings_Sync::build_payload( $groups );
 			$translator = new Heb_Product_Publisher_Translator();
 			$settings   = new Heb_Product_Publisher_Settings_Sync();
 			$res        = $settings->distribute_to_site( $payload, (string) $payload['source_locale'], $site, $translator );
@@ -323,9 +325,11 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 					$t0,
 					true,
 					sprintf(
-						__( '✓ 完成（applied %1$d, skipped %2$d）', 'heb-product-publisher' ),
+						/* translators: 1: applied count, 2: skipped count, 3: settings groups */
+						__( '✓ 完成（applied %1$d, skipped %2$d, groups: %3$s）', 'heb-product-publisher' ),
 						count( (array) ( $res['applied'] ?? [] ) ),
-						count( (array) ( $res['skipped'] ?? [] ) )
+						count( (array) ( $res['skipped'] ?? [] ) ),
+						implode( ', ', $groups )
 					)
 				);
 			}
