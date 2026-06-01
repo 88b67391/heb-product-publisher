@@ -347,11 +347,47 @@ class Heb_Product_Publisher_Async_Media {
 				}
 			}
 			foreach ( $value as $k => $v ) {
+				if ( is_string( $k ) && is_string( $v ) && preg_match( '/custom_css|_css$/i', $k ) ) {
+					$value[ $k ] = $this->replace_urls_in_css_string( $v, $replacements );
+					continue;
+				}
 				$value[ $k ] = $this->walk_replace( $v, $replacements );
 			}
 			return $value;
 		}
 		return $value;
+	}
+
+	/**
+	 * 将 custom CSS 中的 url(...) 替换为 sideload 后的本地地址。
+	 *
+	 * @param string                                         $css           CSS fragment.
+	 * @param array<string,array{id:int,url:string}>         $replacements  Map.
+	 * @return string
+	 */
+	private function replace_urls_in_css_string( $css, array $replacements ) {
+		$css = (string) $css;
+		if ( '' === $css || false === stripos( $css, 'url(' ) ) {
+			return $css;
+		}
+		$self = $this;
+		$out  = preg_replace_callback(
+			'~url\(\s*([\'"]?)(.*?)\1\s*\)~i',
+			static function ( $m ) use ( $self, $replacements ) {
+				$raw = trim( (string) $m[2] );
+				if ( '' === $raw ) {
+					return $m[0];
+				}
+				$rep = $self->match_replacement( $raw, $replacements );
+				if ( null === $rep || '' === $rep['url'] ) {
+					return $m[0];
+				}
+				$quote = '' !== $m[1] ? $m[1] : '"';
+				return 'url(' . $quote . $rep['url'] . $quote . ')';
+			},
+			$css
+		);
+		return is_string( $out ) ? $out : $css;
 	}
 
 	/**

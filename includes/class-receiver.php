@@ -2112,8 +2112,10 @@ class Heb_Product_Publisher_Receiver {
 	 *                             调用方应把它交给 Async_Media::enqueue() 排队。
 	 */
 	private function apply_elementor_payload( $post_id, array $body ) {
-		$pending     = []; // 收集所有 elementor_image 远端 URL，REST 完后异步 sideload。
-		$source_site = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+		$pending      = []; // 收集所有 elementor_image 远端 URL，REST 完后异步 sideload。
+		$source_site  = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+		$decoded_data = [];
+		$settings     = null;
 
 		$has_data = isset( $body['elementor_data'] ) && is_array( $body['elementor_data'] ) && ! empty( $body['elementor_data'] );
 
@@ -2139,6 +2141,17 @@ class Heb_Product_Publisher_Receiver {
 				}
 				update_post_meta( $post_id, '_elementor_page_settings', $settings );
 			}
+		}
+
+		$css_urls = [];
+		if ( ! empty( $decoded_data ) ) {
+			Heb_Product_Publisher_Sync::collect_elementor_css_media_urls( $decoded_data, $css_urls );
+		}
+		if ( is_array( $settings ) ) {
+			Heb_Product_Publisher_Sync::collect_elementor_css_media_urls( $settings, $css_urls );
+		}
+		if ( ! empty( $css_urls ) ) {
+			$pending = array_values( array_unique( array_merge( $pending, $css_urls ) ) );
 		}
 
 		if ( ! empty( $body['elementor_version'] ) && is_string( $body['elementor_version'] ) ) {

@@ -60,6 +60,8 @@ class Heb_Product_Publisher_Translator {
 			'css_classes', 'anchor', 'html_tag',
 			'link_url', 'btn_link', 'menu_anchor',
 			'background_video_link', 'background_slideshow_gallery',
+			// Elementor 字体 / 排版（勿送 AI 翻译）
+			'font_family', 'font_weight', 'font_style', 'text_transform', 'text_decoration',
 			// Elementor 响应式 / 控件尺寸
 			'_inline_size', '_inline_size_tablet', '_inline_size_mobile',
 			'_column_size',
@@ -385,31 +387,159 @@ class Heb_Product_Publisher_Translator {
 	 * @return string
 	 */
 	private function sanitize_elementor_html_setting( $key, $html, $original_html = '' ) {
-		unset( $key, $original_html );
+		unset( $key );
 		if ( false === strpos( $html, '<' ) ) {
 			return $html;
 		}
+		// 仅剔除 AI 误加的超大 inline 字号/行高（源 HTML 没有该属性时）。
+		$html = $this->strip_oversized_inline_typography( $html, $original_html );
+		if ( is_string( $original_html ) && '' !== trim( $original_html ) && false !== strpos( $original_html, '<' ) ) {
+			$html = $this->restore_inline_typography_from_source( $html, $original_html );
+		}
+		return is_string( $html ) ? $html : '';
+	}
+
+	/**
+	 * 删除译文中 AI 额外添加的超大 font-size / line-height（源串对应标签无此属性时）。
+	 *
+	 * @param string $html          Translated HTML.
+	 * @param string $original_html Source HTML.
+	 * @return string
+	 */
+	private function strip_oversized_inline_typography( $html, $original_html = '' ) {
+		$orig_sizes = $this->extract_inline_style_map( $original_html, 'font-size' );
+		$orig_lines = $this->extract_inline_style_map( $original_html, 'line-height' );
+
 		$html = preg_replace_callback(
 			'/\s*font-size\s*:\s*([^;"\'\s]+);?/i',
-			static function ( $m ) {
-				if ( preg_match( '/(\d+)/', (string) $m[1], $n ) && (int) $n[1] > 36 ) {
-					return '';
+			static function ( $m ) use ( $orig_sizes ) {
+				if ( ! preg_match( '/(\d+)/', (string) $m[1], $n ) || (int) $n[1] <= 36 ) {
+					return $m[0];
 				}
-				return $m[0];
+				// 源 HTML 任意标签曾使用该 font-size 则保留。
+				foreach ( $orig_sizes as $size ) {
+					if ( $size === $m[1] || $size === trim( (string) $m[1] ) ) {
+						return $m[0];
+					}
+				}
+				return '';
 			},
 			$html
 		);
 		$html = preg_replace_callback(
 			'/\s*line-height\s*:\s*([^;"\'\s]+);?/i',
-			static function ( $m ) {
-				if ( preg_match( '/(\d+)/', (string) $m[1], $n ) && (int) $n[1] > 80 ) {
-					return '';
+			static function ( $m ) use ( $orig_lines ) {
+				if ( ! preg_match( '/(\d+)/', (string) $m[1], $n ) || (int) $n[1] <= 80 ) {
+					return $m[0];
 				}
-				return $m[0];
+				foreach ( $orig_lines as $lh ) {
+					if ( $lh === $m[1] || $lh === trim( (string) $m[1] ) ) {
+						return $m[0];
+					}
+				}
+				return '';
 			},
 			$html
 		);
 		return is_string( $html ) ? $html : '';
+	}
+
+	/**
+	 * 按标签顺序，把源 HTML inline 排版属性合并回译文（防止翻译后字号/字体丢失）。
+	 *
+	 * @param string $html          Translated HTML.
+	 * @param string $original_html Source HTML.
+	 * @return string
+	 */
+	private function restore_inline_typography_from_source( $html, $original_html ) {
+		preg_match_all( '/\sstyle=(["\'])(.*?)\1/i', $original_html, $orig_styles, PREG_SET_ORDER );
+		if ( empty( $orig_styles ) ) {
+			return $html;
+		}
+		$idx = 0;
+		$self = $this;
+		$out  = preg_replace_callback(
+			'/\sstyle=(["\'])(.*?)\1/i',
+			static function ( $m ) use ( $orig_styles, &$idx, $self ) {
+				if ( ! isset( $orig_styles[ $idx ] ) ) {
+					return $m[0];
+				}
+				$orig_style = (string) $orig_styles[ $idx ][2];
+				$idx++;
+				$merged = $self->merge_inline_typography_styles( $orig_style, (string) $m[2] );
+				return ' style=' . $m[1] . $merged . $m[1];
+			},
+			$html
+		);
+		return is_string( $out ) ? $out : $html;
+	}
+
+	/**
+	 * @param string $original  Source style attribute.
+	 * @param string $translated Translated style attribute.
+	 * @return string
+	 */
+	private function merge_inline_typography_styles( $original, $translated ) {
+		$preserve = [ 'font-size', 'line-height', 'font-family', 'font-weight', 'font-style', 'letter-spacing', 'text-transform' ];
+		$orig_map = $this->parse_inline_style_declarations( $original );
+		$trans    = $this->parse_inline_style_declarations( $translated );
+		foreach ( $preserve as $prop ) {
+			if ( isset( $orig_map[ $prop ] ) ) {
+				$trans[ $prop ] = $orig_map[ $prop ];
+			}
+		}
+		return $this->build_inline_style_declarations( $trans );
+	}
+
+	/**
+	 * @param string $html HTML.
+	 * @param string $prop CSS property name.
+	 * @return array<int,string>
+	 */
+	private function extract_inline_style_map( $html, $prop ) {
+		$values = [];
+		if ( ! is_string( $html ) || '' === $html ) {
+			return $values;
+		}
+		if ( preg_match_all( '/\sstyle=(["\'])(.*?)\1/i', $html, $blocks, PREG_SET_ORDER ) ) {
+			foreach ( $blocks as $block ) {
+				$map = $this->parse_inline_style_declarations( (string) $block[2] );
+				if ( isset( $map[ $prop ] ) ) {
+					$values[] = $map[ $prop ];
+				}
+			}
+		}
+		return $values;
+	}
+
+	/**
+	 * @param string $style Style attribute value.
+	 * @return array<string,string>
+	 */
+	private function parse_inline_style_declarations( $style ) {
+		$out = [];
+		foreach ( preg_split( '/\s*;\s*/', (string) $style ) as $part ) {
+			if ( '' === $part || false === strpos( $part, ':' ) ) {
+				continue;
+			}
+			list( $k, $v ) = array_map( 'trim', explode( ':', $part, 2 ) );
+			if ( '' !== $k && '' !== $v ) {
+				$out[ strtolower( $k ) ] = $v;
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * @param array<string,string> $map Declarations.
+	 * @return string
+	 */
+	private function build_inline_style_declarations( array $map ) {
+		$parts = [];
+		foreach ( $map as $k => $v ) {
+			$parts[] = $k . ': ' . $v;
+		}
+		return implode( '; ', $parts );
 	}
 
 	/**
@@ -801,6 +931,9 @@ class Heb_Product_Publisher_Translator {
 			return true;
 		}
 		if ( preg_match( '/(_slug|_id|_url|_link|_email)$/i', $key ) ) {
+			return true;
+		}
+		if ( preg_match( '/(_font_family|_font_weight|_font_style|_text_transform|_text_decoration|_letter_spacing|_word_spacing|_line_height|_font_size)$/i', $key ) ) {
 			return true;
 		}
 		// Elementor 控件后缀：_tablet / _mobile / _hover / _color / _typography / _shadow

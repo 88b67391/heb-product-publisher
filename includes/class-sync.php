@@ -41,7 +41,7 @@ class Heb_Product_Publisher_Sync {
 			// Elementor image shape：{ id: int, url: string, alt?, source?, size? }
 			// 整个节点替换为 transport token，避免子节点被翻译器扫到。
 			if ( self::looks_like_elementor_image( $value ) ) {
-				$src_url = isset( $value['url'] ) ? self::normalize_media_url( (string) $value['url'] ) : '';
+				$src_url = self::resolve_elementor_image_url( $value );
 				if ( '' !== $src_url ) {
 					return [
 						'__heb_media'  => 'elementor_image',
@@ -63,43 +63,129 @@ class Heb_Product_Publisher_Sync {
 	}
 
 	/**
-	 * Elementor image 节点典型结构识别。
-	 * 必须同时具备 id 和 url；url 必须是 http(s) 开头。
+	 * Elementor image 节点典型结构识别（background_image / 幻灯片 / 图片控件等）。
 	 *
 	 * @param array<mixed,mixed> $value Node value.
 	 * @return bool
 	 */
 	private static function looks_like_elementor_image( array $value ) {
-		if ( ! isset( $value['url'] ) ) {
-			return false;
-		}
-		$url = $value['url'];
-		if ( ! is_string( $url ) || '' === $url ) {
-			return false;
-		}
-		if ( preg_match( '#^https?://#i', $url ) ) {
-			// 媒体库路径：即使没有 id 字段也视为图片（常见于 background_image）。
-			if ( preg_match( '#/wp-content/uploads/#i', $url ) ) {
-				return true;
-			}
-		} elseif ( preg_match( '#^/?wp-content/uploads/#i', $url ) ) {
+		$url = isset( $value['url'] ) && is_string( $value['url'] ) ? trim( $value['url'] ) : '';
+		if ( '' !== $url && self::is_transportable_image_url( $url ) ) {
 			return true;
 		}
-		if ( ! preg_match( '#^https?://#i', $url ) && ! preg_match( '#^/?wp-content/uploads/#i', $url ) ) {
-			return false;
-		}
+		return self::elementor_image_attachment_id( $value ) > 0;
+	}
+
+	/**
+	 * @param array<mixed,mixed> $value Elementor image node.
+	 * @return int
+	 */
+	public static function elementor_image_attachment_id( array $value ) {
 		if ( ! isset( $value['id'] ) ) {
-			return preg_match( '#/wp-content/uploads/#i', $url ) || preg_match( '#^/?wp-content/uploads/#i', $url );
+			return 0;
 		}
-		// id 必须看起来像 attachment ID 或者空字符串（来自 hover image 等可选项）。
 		$id = $value['id'];
 		if ( is_int( $id ) ) {
+			return max( 0, $id );
+		}
+		if ( is_string( $id ) && ctype_digit( $id ) ) {
+			return (int) $id;
+		}
+		return 0;
+	}
+
+	/**
+	 * 解析 Elementor 图片节点的 sideload 源 URL（含仅 id 无 url 的背景图）。
+	 *
+	 * @param array<mixed,mixed> $value Elementor image node.
+	 * @return string
+	 */
+	public static function resolve_elementor_image_url( array $value ) {
+		$url = isset( $value['url'] ) && is_string( $value['url'] ) ? self::normalize_media_url( $value['url'] ) : '';
+		if ( '' !== $url && self::is_transportable_image_url( $url ) ) {
+			return $url;
+		}
+		$id = self::elementor_image_attachment_id( $value );
+		if ( $id > 0 && wp_attachment_is_image( $id ) ) {
+			$resolved = wp_get_attachment_image_url( $id, 'full' );
+			if ( is_string( $resolved ) && '' !== $resolved ) {
+				return self::normalize_media_url( $resolved );
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * URL 是否应纳入 Elementor 图片 sideload（uploads、常见图片扩展名）。
+	 *
+	 * @param string $url Raw or normalized URL.
+	 * @return bool
+	 */
+	public static function is_transportable_image_url( $url ) {
+		$url = self::normalize_media_url( (string) $url );
+		if ( '' === $url ) {
+			return false;
+		}
+		if ( 0 === strpos( $url, 'data:' ) ) {
+			return false;
+		}
+		if ( preg_match( '#/wp-content/uploads/#i', $url ) ) {
 			return true;
 		}
-		if ( is_string( $id ) && ( '' === $id || ctype_digit( $id ) ) ) {
+		if ( preg_match( '#^https?://#i', $url ) && preg_match( '/\.(jpe?g|png|gif|webp|avif)(\?|#|$)/i', $url ) ) {
 			return true;
 		}
 		return false;
+	}
+
+	/**
+	 * 从 Elementor custom CSS 中提取 background / content url(...) 图片地址。
+	 *
+	 * @param string $css CSS fragment.
+	 * @return array<int,string>
+	 */
+	public static function extract_urls_from_css( $css ) {
+		$css = (string) $css;
+		if ( '' === $css || false === stripos( $css, 'url(' ) ) {
+			return [];
+		}
+		$urls = [];
+		if ( preg_match_all( '~url\(\s*[\'"]?(.*?)[\'"]?\s*\)~i', $css, $matches ) ) {
+			foreach ( $matches[1] as $raw ) {
+				$raw = trim( (string) $raw );
+				if ( '' === $raw || 0 === strpos( $raw, 'data:' ) ) {
+					continue;
+				}
+				$norm = self::normalize_media_url( $raw );
+				if ( self::is_transportable_image_url( $norm ) ) {
+					$urls[] = $norm;
+				}
+			}
+		}
+		return array_values( array_unique( $urls ) );
+	}
+
+	/**
+	 * 递归收集 Elementor 树 / settings 中 custom_css 里的待 sideload URL。
+	 *
+	 * @param mixed              $node  Elementor branch.
+	 * @param array<int,string>  $urls  Collector (by ref).
+	 */
+	public static function collect_elementor_css_media_urls( $node, array &$urls ) {
+		if ( is_string( $node ) ) {
+			return;
+		}
+		if ( ! is_array( $node ) ) {
+			return;
+		}
+		foreach ( $node as $key => $child ) {
+			if ( is_string( $key ) && is_string( $child ) && preg_match( '/custom_css|_css$/i', $key ) ) {
+				foreach ( self::extract_urls_from_css( $child ) as $u ) {
+					$urls[] = $u;
+				}
+			}
+			self::collect_elementor_css_media_urls( $child, $urls );
+		}
 	}
 
 	/**
