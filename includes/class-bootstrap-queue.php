@@ -723,6 +723,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 		Heb_Product_Publisher_Runtime::raise();
 		if ( '' !== (string) $job_id ) {
 			self::rescue_stalled_stage( (string) $job_id );
+			self::maybe_enqueue_finalize( (string) $job_id );
 		}
 		if ( class_exists( 'ActionScheduler_QueueRunner' ) ) {
 			$runner = \ActionScheduler_QueueRunner::instance();
@@ -737,7 +738,42 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 	}
 
 	/**
-	 * dry_run 模式：统计将要分发的对象数量（不入队）。
+	 * Job 已到 finished 阶段但 finalize 未跑完时，补排 finalize 任务。
+	 *
+	 * @param string $job_id Job id.
+	 * @return bool 是否补排了 finalize。
+	 */
+	public static function maybe_enqueue_finalize( $job_id ) {
+		$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+		if ( ! $rec ) {
+			return false;
+		}
+		if ( ! in_array( $rec['status'] ?? '', [ Heb_Product_Publisher_Bootstrap_Status::STATUS_QUEUED, Heb_Product_Publisher_Bootstrap_Status::STATUS_RUNNING ], true ) ) {
+			return false;
+		}
+		if ( (string) ( $rec['current_stage'] ?? '' ) !== Heb_Product_Publisher_Bootstrap_Status::STAGE_FINISHED ) {
+			return false;
+		}
+		if ( ! empty( $rec['finished_at'] ) ) {
+			return false;
+		}
+		$snap = self::get_job_queue_snapshot( $job_id );
+		foreach ( $snap['items'] as $item ) {
+			if ( self::HOOK_FINALIZE === ( $item['hook'] ?? '' ) && in_array( $item['status'] ?? '', [ 'pending', 'running' ], true ) ) {
+				return false;
+			}
+		}
+		as_enqueue_async_action( self::HOOK_FINALIZE, [ [ 'job_id' => (string) $job_id ] ], self::GROUP );
+		Heb_Product_Publisher_Bootstrap_Status::add_log(
+			$job_id,
+			'warning',
+			__( '队列停滞：已补排 finalize 收尾任务', 'heb-product-publisher' )
+		);
+		return true;
+	}
+
+	/**
+	 * dry_run 模式：统计将要分发的 object 数量（不入队）。
 	 *
 	 * @param array<string,mixed> $rec Job record.
 	 * @return array{terms:int,posts:int,menus:int,settings:int}
@@ -1018,6 +1054,9 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 		$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
 		$opts = ( $rec && isset( $rec['opts'] ) && is_array( $rec['opts'] ) ) ? $rec['opts'] : [];
 		if ( ! empty( $opts['retry_mode'] ) ) {
+			if ( Heb_Product_Publisher_Bootstrap_Status::STAGE_FINISHED === $stage ) {
+				as_enqueue_async_action( self::HOOK_FINALIZE, [ [ 'job_id' => $job_id ] ], self::GROUP );
+			}
 			return;
 		}
 		switch ( $stage ) {

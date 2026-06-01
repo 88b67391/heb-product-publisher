@@ -439,7 +439,9 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		$activity = isset( $enriched['activity'] ) && is_array( $enriched['activity'] ) ? $enriched['activity'] : [];
 		$stalled  = ! empty( $activity['queue_stalled'] );
 		$stale    = ! empty( $activity['stale'] );
-		if ( ! $stalled && ! $stale ) {
+		$stage    = (string) ( $rec['current_stage'] ?? '' );
+		$needs_finalize = $stage === Heb_Product_Publisher_Bootstrap_Status::STAGE_FINISHED && empty( $rec['finished_at'] );
+		if ( ! $stalled && ! $stale && ! $needs_finalize ) {
 			return;
 		}
 
@@ -488,6 +490,8 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 					$running
 				)
 			);
+		} elseif ( $needs_finalize ) {
+			Heb_Product_Publisher_Bootstrap_Queue::maybe_enqueue_finalize( $job_id );
 		}
 		Heb_Product_Publisher_Bootstrap_Queue::nudge_queue_runner( $job_id );
 	}

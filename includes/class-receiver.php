@@ -676,16 +676,7 @@ class Heb_Product_Publisher_Receiver {
 				}
 			}
 
-			if ( class_exists( '\\Elementor\\Plugin' ) ) {
-				try {
-					$plugin = \Elementor\Plugin::$instance;
-					if ( $plugin && isset( $plugin->files_manager ) && method_exists( $plugin->files_manager, 'clear_cache' ) ) {
-						$plugin->files_manager->clear_cache();
-					}
-				} catch ( \Throwable $e ) {
-					$errors[] = 'elementor_clear_cache: ' . $e->getMessage();
-				}
-			}
+			$this->post_settings_activation( $applied, $errors, $flush_rewrite );
 
 			if ( empty( $applied ) && ! empty( $errors ) ) {
 				return new \WP_Error(
@@ -706,6 +697,7 @@ class Heb_Product_Publisher_Receiver {
 					'skipped'         => $skipped,
 					'errors'          => $errors,
 					'rewrite_flushed' => $flush_rewrite,
+					'theme_builder_regenerated' => in_array( 'elementor_theme_builder', $applied, true ),
 				]
 			);
 		} catch ( \Throwable $e ) {
@@ -1159,6 +1151,60 @@ class Heb_Product_Publisher_Receiver {
 			md5( (string) $source_site )
 		);
 		delete_transient( $key );
+	}
+
+	/**
+	 * settings 写入后激活：flush 重写规则、清 Elementor 缓存、重建 Theme Builder 条件缓存。
+	 *
+	 * @param array<int,string> $applied Applied list (by ref append).
+	 * @param array<int,string> $errors  Errors list (by ref append).
+	 * @param bool              $flush_rewrite Whether permalink changed.
+	 * @return void
+	 */
+	private function post_settings_activation( array &$applied, array &$errors, $flush_rewrite ) {
+		try {
+			flush_rewrite_rules( false );
+			if ( ! $flush_rewrite ) {
+				$applied[] = 'rewrite_flush';
+			}
+		} catch ( \Throwable $e ) {
+			$errors[] = 'rewrite_flush: ' . $e->getMessage();
+		}
+
+		if ( class_exists( '\\Elementor\\Plugin' ) ) {
+			try {
+				$plugin = \Elementor\Plugin::$instance;
+				if ( $plugin && isset( $plugin->files_manager ) && method_exists( $plugin->files_manager, 'clear_cache' ) ) {
+					$plugin->files_manager->clear_cache();
+					$applied[] = 'elementor_cache';
+				}
+			} catch ( \Throwable $e ) {
+				$errors[] = 'elementor_clear_cache: ' . $e->getMessage();
+			}
+		}
+
+		if ( class_exists( '\\ElementorPro\\Plugin' ) ) {
+			try {
+				$pro = \ElementorPro\Plugin::instance();
+				if ( $pro && isset( $pro->modules_manager ) && method_exists( $pro->modules_manager, 'get_modules' ) ) {
+					$module = $pro->modules_manager->get_modules( 'theme-builder' );
+					if ( $module && method_exists( $module, 'get_conditions_manager' ) ) {
+						$cm = $module->get_conditions_manager();
+						if ( $cm && method_exists( $cm, 'get_cache' ) ) {
+							$cache = $cm->get_cache();
+							if ( $cache && method_exists( $cache, 'regenerate' ) ) {
+								$cache->regenerate();
+								$applied[] = 'elementor_theme_builder';
+							}
+						}
+					}
+				}
+			} catch ( \Throwable $e ) {
+				$errors[] = 'elementor_theme_builder: ' . $e->getMessage();
+			}
+		}
+
+		do_action( 'heb_pp_settings_imported' );
 	}
 
 	/**
