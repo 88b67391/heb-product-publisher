@@ -1205,6 +1205,71 @@ class Heb_Product_Publisher_Receiver {
 		}
 
 		do_action( 'heb_pp_settings_imported' );
+
+		$this->regenerate_elementor_theme_css( $applied, $errors );
+	}
+
+	/**
+	 * 为单个 Elementor 文档重新生成 _elementor_css（含 typography 等 widget 样式）。
+	 *
+	 * @param int $post_id Post id.
+	 * @return bool
+	 */
+	private function regenerate_elementor_post_css( $post_id ) {
+		$post_id = (int) $post_id;
+		if ( $post_id <= 0 ) {
+			return false;
+		}
+		delete_post_meta( $post_id, '_elementor_css' );
+		if ( ! class_exists( '\\Elementor\\Core\\Files\\CSS\\Post' ) ) {
+			return false;
+		}
+		try {
+			$css = \Elementor\Core\Files\CSS\Post::create( $post_id );
+			if ( $css && method_exists( $css, 'update' ) ) {
+				$css->update();
+				return true;
+			}
+		} catch ( \Throwable $e ) {
+			unset( $e );
+		}
+		return false;
+	}
+
+	/**
+	 * settings 同步后重建 Theme Builder 模板（header/footer/archive）的 Elementor CSS。
+	 *
+	 * @param array<int,string> $applied Applied list (by ref append).
+	 * @param array<int,string> $errors  Errors list (by ref append).
+	 * @return void
+	 */
+	private function regenerate_elementor_theme_css( array &$applied, array &$errors ) {
+		$regenerated = 0;
+		$kit_id      = (int) get_option( 'elementor_active_kit' );
+		if ( $kit_id > 0 && $this->regenerate_elementor_post_css( $kit_id ) ) {
+			++$regenerated;
+		}
+		$template_ids = get_posts(
+			[
+				'post_type'      => 'elementor_library',
+				'post_status'    => 'publish',
+				'posts_per_page' => -1,
+				'fields'         => 'ids',
+			]
+		);
+		if ( is_array( $template_ids ) ) {
+			foreach ( $template_ids as $tid ) {
+				if ( 'builder' !== (string) get_post_meta( (int) $tid, '_elementor_edit_mode', true ) ) {
+					continue;
+				}
+				if ( $this->regenerate_elementor_post_css( (int) $tid ) ) {
+					++$regenerated;
+				}
+			}
+		}
+		if ( $regenerated > 0 ) {
+			$applied[] = 'elementor_css_regenerated:' . $regenerated;
+		}
 	}
 
 	/**
@@ -2022,17 +2087,15 @@ class Heb_Product_Publisher_Receiver {
 			}
 		}
 
-		// 清缓存：写完 _elementor_data 后必须清 CSS 缓存，否则前端可能还在用旧版式。
+		// 写完 _elementor_data 后重新生成 CSS，否则 Text Editor 等 widget 会丢失字号样式。
 		if ( $has_data ) {
-			delete_post_meta( $post_id, '_elementor_css' );
-			if ( class_exists( '\\Elementor\\Plugin' ) ) {
+			if ( ! $this->regenerate_elementor_post_css( $post_id ) && class_exists( '\\Elementor\\Plugin' ) ) {
 				try {
 					$plugin = \Elementor\Plugin::$instance;
 					if ( $plugin && isset( $plugin->files_manager ) && method_exists( $plugin->files_manager, 'clear_cache' ) ) {
 						$plugin->files_manager->clear_cache();
 					}
 				} catch ( \Throwable $e ) {
-					// Elementor 未启用或内部异常时忽略，不阻塞导入流程。
 					unset( $e );
 				}
 			}
