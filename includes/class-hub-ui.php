@@ -845,7 +845,7 @@ class Heb_Product_Publisher_Hub_UI {
 				$pending_media
 			);
 		}
-		foreach ( $this->elementor_translate_warnings( $basepayload, $translate_stats ) as $ew ) {
+		foreach ( $this->elementor_translate_warnings( $basepayload, $translate_stats, $site ) as $ew ) {
 			$warns[] = $ew;
 		}
 		if ( ! empty( $translate_stats['strings'] ) && isset( $translate_stats['translated'] ) ) {
@@ -963,9 +963,10 @@ class Heb_Product_Publisher_Hub_UI {
 	 *
 	 * @param array<string,mixed> $basepayload     源 payload。
 	 * @param array<string,mixed> $translate_stats 翻译统计。
+	 * @param array<string,mixed> $site            目标站点配置。
 	 * @return array<int,string>
 	 */
-	private function elementor_translate_warnings( array $basepayload, array $translate_stats ) {
+	private function elementor_translate_warnings( array $basepayload, array $translate_stats, array $site = [] ) {
 		$warnings = [];
 		$post_type = isset( $basepayload['post_type'] ) ? (string) $basepayload['post_type'] : '';
 		if ( ! in_array( $post_type, [ 'page', 'elementor_library', 'products', 'solutions' ], true ) ) {
@@ -1004,13 +1005,42 @@ class Heb_Product_Publisher_Hub_UI {
 			isset( $basepayload['elementor_data'] ) ? $basepayload['elementor_data'] : []
 		);
 		if ( ! empty( $referenced ) ) {
-			$warnings[] = sprintf(
-				/* translators: %s: comma-separated loop/template post IDs */
-				__( 'Loop Grid / 模板引用模板 #%s：必须先分发对应 Elementor 模板（elementor_library），否则子站 remap 失败会导致 Loop 无样式、文字回退为超大默认字号。', 'heb-product-publisher' ),
-				implode( ', #', $referenced )
-			);
+			$site_id = isset( $site['id'] ) ? (string) $site['id'] : '';
+			$missing = [];
+			foreach ( $referenced as $tid ) {
+				if ( ! $this->template_distributed_to_site( (int) $tid, $site_id ) ) {
+					$missing[] = (int) $tid;
+				}
+			}
+			// 只对"尚未成功分发到该子站"的引用模板告警，避免依赖已满足时误报。
+			if ( ! empty( $missing ) ) {
+				$warnings[] = sprintf(
+					/* translators: %s: comma-separated loop/template post IDs */
+					__( 'Loop Grid / 模板引用模板 #%s 尚未分发到该子站：请先分发对应 Elementor 模板（elementor_library），否则子站 remap 失败会导致 Loop 无样式、文字回退为超大默认字号。', 'heb-product-publisher' ),
+					implode( ', #', $missing )
+				);
+			}
 		}
 
 		return $warnings;
+	}
+
+	/**
+	 * 引用模板是否已成功分发到目标子站（按源模板 _heb_pp_distributions 记录判断）。
+	 *
+	 * @param int    $template_id 源模板 post id。
+	 * @param string $site_id     目标站点 id。
+	 * @return bool
+	 */
+	private function template_distributed_to_site( $template_id, $site_id ) {
+		if ( $template_id <= 0 || '' === $site_id ) {
+			return false;
+		}
+		$dist = get_post_meta( $template_id, '_heb_pp_distributions', true );
+		if ( ! is_array( $dist ) || ! isset( $dist[ $site_id ] ) || ! is_array( $dist[ $site_id ] ) ) {
+			return false;
+		}
+		$status = isset( $dist[ $site_id ]['last_status'] ) ? (string) $dist[ $site_id ]['last_status'] : '';
+		return in_array( $status, [ 'success', 'warn' ], true );
 	}
 }
