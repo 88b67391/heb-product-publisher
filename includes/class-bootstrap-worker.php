@@ -202,7 +202,6 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			if ( empty( $payload ) ) {
 				Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, $stage, 'skipped' );
 				$this->finish_item( $job_id, 'post', $post_id, $t0, true, __( '空 payload，跳过', 'heb-product-publisher' ) );
-				$this->maybe_advance_stage( $job_id );
 				return;
 			}
 			$payload['bootstrap_context'] = true;
@@ -236,6 +235,7 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 		} finally {
 			self::$in_bootstrap_item = false;
 		}
+		Heb_Product_Publisher_Bootstrap_Queue::schedule_next_post_in_queue( $job_id );
 		$this->maybe_advance_stage( $job_id );
 	}
 

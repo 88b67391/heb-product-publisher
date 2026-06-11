@@ -43,17 +43,20 @@ class Heb_Product_Publisher_Sync {
 			if ( self::looks_like_elementor_image( $value ) ) {
 				$src_url = self::resolve_elementor_image_url( $value );
 				if ( '' !== $src_url ) {
-					return [
-						'__heb_media'  => 'elementor_image',
-						'__heb_url'    => $src_url,
-						'__heb_alt'    => isset( $value['alt'] ) ? (string) $value['alt'] : '',
-						'__heb_size'   => isset( $value['size'] ) ? (string) $value['size'] : '',
-						'__heb_source' => isset( $value['source'] ) && '' !== $value['source'] ? (string) $value['source'] : 'library',
-					];
+					return self::make_elementor_image_token( $value, $src_url );
 				}
 			}
 			$out = [];
 			foreach ( $value as $k => $v ) {
+				$key = (string) $k;
+				// 部分控件把背景图存成字符串 URL（非 {id,url} 对象）。
+				if ( is_string( $v ) && self::is_elementor_image_field_key( $key ) ) {
+					$src_url = self::normalize_media_url( $v );
+					if ( self::is_transportable_image_url( $src_url ) ) {
+						$out[ $k ] = self::make_elementor_image_token( [], $src_url );
+						continue;
+					}
+				}
 				$out[ $k ] = self::encode_acf_for_transport( $v );
 			}
 			return $out;
@@ -208,7 +211,36 @@ class Heb_Product_Publisher_Sync {
 		if ( preg_match( '#^wp-content/uploads/#i', $url ) ) {
 			return home_url( '/' . ltrim( $url, '/' ) );
 		}
+		// Elementor 偶发相对路径：2024/06/foo.jpg 或 uploads/2024/06/foo.jpg
+		if ( preg_match( '#^\d{4}/#', $url ) || preg_match( '#^uploads/#i', $url ) ) {
+			return home_url( '/wp-content/uploads/' . ltrim( $url, '/' ) );
+		}
 		return $url;
+	}
+
+	/**
+	 * @param array<mixed,mixed> $value Elementor image node (可为空数组)。
+	 * @param string             $src_url Normalized URL.
+	 * @return array<string,string>
+	 */
+	private static function make_elementor_image_token( array $value, $src_url ) {
+		return [
+			'__heb_media'  => 'elementor_image',
+			'__heb_url'    => (string) $src_url,
+			'__heb_alt'    => isset( $value['alt'] ) ? (string) $value['alt'] : '',
+			'__heb_size'   => isset( $value['size'] ) ? (string) $value['size'] : '',
+			'__heb_source' => isset( $value['source'] ) && '' !== (string) $value['source'] ? (string) $value['source'] : 'library',
+		];
+	}
+
+	/**
+	 * Elementor 控件里常见图片字段名（含 background_image / overlay 等）。
+	 *
+	 * @param string $key Field key.
+	 * @return bool
+	 */
+	private static function is_elementor_image_field_key( $key ) {
+		return (bool) preg_match( '/(?:^|_)(?:background_)?(?:image|photo|logo|icon|avatar|picture)(?:_|$)/i', (string) $key );
 	}
 
 	/**

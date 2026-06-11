@@ -1828,13 +1828,25 @@ class Heb_Product_Publisher_Receiver {
 	 */
 	private function collect_sideload_trusted_hosts( array $body ) {
 		$hosts = [];
-		$src   = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
+		$add   = static function ( $host ) use ( &$hosts ) {
+			$host = strtolower( trim( (string) $host ) );
+			if ( '' === $host ) {
+				return;
+			}
+			$hosts[] = $host;
+			if ( 0 === strpos( $host, 'www.' ) ) {
+				$hosts[] = substr( $host, 4 );
+			} else {
+				$hosts[] = 'www.' . $host;
+			}
+		};
+		$src = isset( $body['source_site'] ) ? sanitize_text_field( (string) $body['source_site'] ) : '';
 		if ( '' !== $src ) {
 			$h = wp_parse_url( 'https://' . ltrim( $src, '/' ), PHP_URL_HOST );
 			if ( is_string( $h ) && '' !== $h ) {
-				$hosts[] = strtolower( $h );
+				$add( $h );
 			}
-			$hosts[] = strtolower( $src );
+			$add( $src );
 		}
 		if ( class_exists( 'Heb_Product_Publisher_Admin_Settings', false ) ) {
 			foreach ( Heb_Product_Publisher_Admin_Settings::remote_sites() as $site ) {
@@ -1843,13 +1855,13 @@ class Heb_Product_Publisher_Receiver {
 				}
 				$h = wp_parse_url( (string) $site['url'], PHP_URL_HOST );
 				if ( is_string( $h ) && '' !== $h ) {
-					$hosts[] = strtolower( $h );
+					$add( $h );
 				}
 			}
 		}
 		$home = wp_parse_url( home_url(), PHP_URL_HOST );
 		if ( is_string( $home ) && '' !== $home ) {
-			$hosts[] = strtolower( $home );
+			$add( $home );
 		}
 		return array_values(
 			array_unique(

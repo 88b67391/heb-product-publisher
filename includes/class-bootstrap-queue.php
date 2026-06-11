@@ -430,32 +430,36 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 
 		$rescued = 0;
 		if ( Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS === $stage ) {
-			$opts    = isset( $rec['opts'] ) && is_array( $rec['opts'] ) ? $rec['opts'] : [];
-			$missing = self::find_missing_stage_objects( $rec, $job_id, self::HOOK_POST, 'post', 'post_id', self::collect_distributable_post_ids( $opts ), $remaining );
-			foreach ( $missing as $post_id ) {
-				if ( in_array( (int) $post_id, self::get_job_inflight_object_ids( $job_id, self::HOOK_POST, 'post_id' ), true ) ) {
-					continue;
+			$opts = isset( $rec['opts'] ) && is_array( $rec['opts'] ) ? $rec['opts'] : [];
+			if ( ! empty( $rec['post_queue'] ) && is_array( $rec['post_queue'] ) ) {
+				$rescued = self::rescue_next_post_in_queue( $job_id );
+			} else {
+				$missing = self::find_missing_stage_objects( $rec, $job_id, self::HOOK_POST, 'post', 'post_id', self::collect_distributable_post_ids( $opts ), $remaining );
+				foreach ( $missing as $post_id ) {
+					if ( in_array( (int) $post_id, self::get_job_inflight_object_ids( $job_id, self::HOOK_POST, 'post_id' ), true ) ) {
+						continue;
+					}
+					self::schedule_bootstrap_action(
+						self::HOOK_POST,
+						[
+							'job_id'  => $job_id,
+							'post_id' => (int) $post_id,
+						]
+					);
+					$rescued++;
 				}
-				self::schedule_bootstrap_action(
-					self::HOOK_POST,
-					[
-						'job_id'  => $job_id,
-						'post_id' => (int) $post_id,
-					]
-				);
-				$rescued++;
-			}
-			if ( $rescued > 0 ) {
-				Heb_Product_Publisher_Bootstrap_Status::add_log(
-					$job_id,
-					'warning',
-					sprintf(
-						/* translators: 1: count, 2: post ids */
-						__( '队列停滞：已补排 %1$d 个遗漏 post（%2$s）', 'heb-product-publisher' ),
-						$rescued,
-						'#' . implode( ', #', array_map( 'strval', $missing ) )
-					)
-				);
+				if ( $rescued > 0 ) {
+					Heb_Product_Publisher_Bootstrap_Status::add_log(
+						$job_id,
+						'warning',
+						sprintf(
+							/* translators: 1: count, 2: post ids */
+							__( '队列停滞：已补排 %1$d 个遗漏 post（%2$s）', 'heb-product-publisher' ),
+							$rescued,
+							'#' . implode( ', #', array_map( 'strval', $missing ) )
+						)
+					);
+				}
 			}
 		} elseif ( Heb_Product_Publisher_Bootstrap_Status::STAGE_TERMS === $stage ) {
 			$missing = self::find_missing_stage_objects( $rec, $job_id, self::HOOK_TERM, 'term', 'term_id', self::collect_distributable_term_ids(), $remaining );
@@ -1186,7 +1190,7 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 		$rec  = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
 		$opts = ( $rec && isset( $rec['opts'] ) && is_array( $rec['opts'] ) ) ? $rec['opts'] : [];
 		$types = self::scoped_post_types( $opts );
-		$queued = 0;
+		$all_queue = [];
 		foreach ( $types as $pt ) {
 			$ids = get_posts(
 				[
@@ -1203,29 +1207,25 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			}
 			$ordered = self::sort_posts_by_parent_depth( $ids );
 			if ( 'elementor_library' === $pt ) {
+				// Kit 必须最先：Header/Footer 背景常绑定 Global/Kit 变量。
+				$ordered = self::order_kit_templates_first( $ordered );
 				// 被引用的模板（Loop Item / 内嵌模板）必须先分发，否则引用它的
 				// Single / Archive 在子站 remap 时找不到目标，导致 Loop 无样式。
 				$ordered = self::order_rows_by_template_refs( $ordered );
 			}
 			foreach ( $ordered as $row ) {
-				self::schedule_bootstrap_action(
-					self::HOOK_POST,
-					[
-						'job_id'  => $job_id,
-						'post_id' => (int) $row['id'],
-					],
-					(int) $row['depth'] * 120 + $queued
-				);
-				$queued++;
+				$all_queue[] = (int) $row['id'];
 			}
 		}
+
+		$queued = count( $all_queue );
 		Heb_Product_Publisher_Bootstrap_Status::increment( $job_id, Heb_Product_Publisher_Bootstrap_Status::STAGE_POSTS, 'queued', $queued );
 		Heb_Product_Publisher_Bootstrap_Status::add_log(
 			$job_id,
 			'info',
 			sprintf(
 				/* translators: 1: count, 2: comma-separated post types */
-				__( '已排队 %1$d 个 post（%2$s）', 'heb-product-publisher' ),
+				__( '已排队 %1$d 个 post（%2$s，串行分发）', 'heb-product-publisher' ),
 				$queued,
 				! empty( $types ) ? implode( ', ', $types ) : '-'
 			)
@@ -1233,7 +1233,111 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 
 		if ( 0 === $queued ) {
 			self::advance_stage( $job_id );
+			return;
 		}
+
+		Heb_Product_Publisher_Bootstrap_Status::update(
+			$job_id,
+			[
+				'post_queue'        => $all_queue,
+				'post_queue_cursor' => 0,
+			]
+		);
+
+		self::schedule_bootstrap_action(
+			self::HOOK_POST,
+			[
+				'job_id'  => $job_id,
+				'post_id' => (int) $all_queue[0],
+			],
+			0
+		);
+	}
+
+	/**
+	 * 当前 post 完成后调度队列中的下一项（串行，避免 AS 并行导致模板 remap 时序错乱）。
+	 *
+	 * @param string $job_id Job id.
+	 * @return bool 是否已调度下一项。
+	 */
+	public static function schedule_next_post_in_queue( $job_id ) {
+		$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+		if ( ! $rec ) {
+			return false;
+		}
+		$queue = isset( $rec['post_queue'] ) && is_array( $rec['post_queue'] ) ? array_values( array_map( 'intval', $rec['post_queue'] ) ) : [];
+		if ( empty( $queue ) ) {
+			return false;
+		}
+		$cursor = isset( $rec['post_queue_cursor'] ) ? (int) $rec['post_queue_cursor'] : 0;
+		$next   = $cursor + 1;
+		if ( $next >= count( $queue ) ) {
+			return false;
+		}
+
+		Heb_Product_Publisher_Bootstrap_Status::update( $job_id, [ 'post_queue_cursor' => $next ] );
+		self::schedule_bootstrap_action(
+			self::HOOK_POST,
+			[
+				'job_id'  => $job_id,
+				'post_id' => (int) $queue[ $next ],
+			],
+			2
+		);
+		return true;
+	}
+
+	/**
+	 * 停滞恢复：按 post_queue 顺序补排下一项未完结 post（仅一项，保持串行）。
+	 *
+	 * @param string $job_id Job id.
+	 * @return int 1 若已补排，否则 0。
+	 */
+	private static function rescue_next_post_in_queue( $job_id ) {
+		$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+		if ( ! $rec ) {
+			return 0;
+		}
+		$queue = isset( $rec['post_queue'] ) && is_array( $rec['post_queue'] ) ? array_values( array_map( 'intval', $rec['post_queue'] ) ) : [];
+		if ( empty( $queue ) ) {
+			return 0;
+		}
+		$finished = array_unique(
+			array_merge(
+				self::get_accounted_ids_from_log( $rec, 'post' ),
+				self::get_error_source_ids( $rec, 'post' )
+			)
+		);
+		$inflight = self::get_job_inflight_object_ids( $job_id, self::HOOK_POST, 'post_id' );
+		if ( ! empty( $inflight ) ) {
+			return 0;
+		}
+		foreach ( $queue as $idx => $post_id ) {
+			if ( in_array( (int) $post_id, $finished, true ) ) {
+				continue;
+			}
+			Heb_Product_Publisher_Bootstrap_Status::update( $job_id, [ 'post_queue_cursor' => (int) $idx ] );
+			self::schedule_bootstrap_action(
+				self::HOOK_POST,
+				[
+					'job_id'  => $job_id,
+					'post_id' => (int) $post_id,
+				],
+				2
+			);
+			Heb_Product_Publisher_Bootstrap_Status::add_log(
+				$job_id,
+				'warning',
+				sprintf(
+					/* translators: 1: post id, 2: queue index */
+					__( '队列停滞：已补排 post #%1$d（队列 #%2$d）', 'heb-product-publisher' ),
+					(int) $post_id,
+					(int) $idx + 1
+				)
+			);
+			return 1;
+		}
+		return 0;
 	}
 
 	/**
@@ -1353,6 +1457,27 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			return [];
 		}
 		return Heb_Product_Publisher_Sync::find_referenced_template_ids( $decoded );
+	}
+
+	/**
+	 * Kit 模板优先于 Header/Footer/Loop（Global 背景与 typography 依赖 Kit）。
+	 *
+	 * @param array<int,array{id:int,depth:int}> $rows Depth-sorted rows.
+	 * @return array<int,array{id:int,depth:int}>
+	 */
+	private static function order_kit_templates_first( array $rows ) {
+		$kits = [];
+		$rest = [];
+		foreach ( $rows as $row ) {
+			$id   = (int) $row['id'];
+			$type = get_post_meta( $id, '_elementor_template_type', true );
+			if ( 'kit' === (string) $type ) {
+				$kits[] = $row;
+			} else {
+				$rest[] = $row;
+			}
+		}
+		return array_merge( $kits, $rest );
 	}
 
 	/**
