@@ -976,9 +976,13 @@ class Heb_Product_Publisher_Hub_UI {
 		$widgets   = isset( $translate_stats['elementor_widgets'] ) ? (int) $translate_stats['elementor_widgets'] : 0;
 		$e_strings = isset( $translate_stats['strings_elementor'] ) ? (int) $translate_stats['strings_elementor'] : 0;
 		$edit_mode = isset( $basepayload['elementor_edit_mode'] ) ? (string) $basepayload['elementor_edit_mode'] : '';
+		$tpl_type  = isset( $basepayload['elementor_template_type'] ) ? (string) $basepayload['elementor_template_type'] : '';
 		$is_builder = 'builder' === $edit_mode;
+		// Kit（Default Kit）内容存于 page settings（全局色板/字体），_elementor_data 本就为空，
+		// 不属于「内容缺失」，跳过空数据告警避免误报。
+		$is_kit = 'kit' === $tpl_type;
 
-		if ( $is_builder && 0 === $widgets ) {
+		if ( $is_builder && 0 === $widgets && ! $is_kit ) {
 			$warnings[] = __(
 				'本页为 Elementor 编辑，但 _elementor_data 为空：前台可见内容很可能在 Theme Builder 模板（Header/Footer/Single）中，请单独 Bootstrap「Elementor 模板」。',
 				'heb-product-publisher'

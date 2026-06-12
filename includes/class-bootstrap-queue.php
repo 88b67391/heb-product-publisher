@@ -1275,12 +1275,19 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			return false;
 		}
 
+		$next_id = (int) $queue[ $next ];
+		// 去重：下一项若已在 AS 队列待处理（例如 watchdog 已补排），不要重复排。
+		if ( self::post_action_pending( $job_id, $next_id ) ) {
+			Heb_Product_Publisher_Bootstrap_Status::update( $job_id, [ 'post_queue_cursor' => $next ] );
+			return true;
+		}
+
 		Heb_Product_Publisher_Bootstrap_Status::update( $job_id, [ 'post_queue_cursor' => $next ] );
 		self::schedule_bootstrap_action(
 			self::HOOK_POST,
 			[
 				'job_id'  => $job_id,
-				'post_id' => (int) $queue[ $next ],
+				'post_id' => $next_id,
 			],
 			2
 		);
@@ -1294,50 +1301,62 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 	 * @return int 1 若已补排，否则 0。
 	 */
 	private static function rescue_next_post_in_queue( $job_id ) {
-		$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
-		if ( ! $rec ) {
-			return 0;
-		}
-		$queue = isset( $rec['post_queue'] ) && is_array( $rec['post_queue'] ) ? array_values( array_map( 'intval', $rec['post_queue'] ) ) : [];
-		if ( empty( $queue ) ) {
-			return 0;
-		}
-		$finished = array_unique(
-			array_merge(
-				self::get_accounted_ids_from_log( $rec, 'post' ),
-				self::get_error_source_ids( $rec, 'post' )
-			)
-		);
-		$inflight = self::get_job_inflight_object_ids( $job_id, self::HOOK_POST, 'post_id' );
-		if ( ! empty( $inflight ) ) {
-			return 0;
-		}
-		foreach ( $queue as $idx => $post_id ) {
-			if ( in_array( (int) $post_id, $finished, true ) ) {
-				continue;
+		// 用 advance 锁串行化：避免并发 watchdog 在同一秒重复补排同一个 post。
+		$result = Heb_Product_Publisher_Bootstrap_Status::with_advance_lock(
+			$job_id,
+			static function () use ( $job_id ) {
+				$rec = Heb_Product_Publisher_Bootstrap_Status::get( $job_id );
+				if ( ! $rec ) {
+					return 0;
+				}
+				$queue = isset( $rec['post_queue'] ) && is_array( $rec['post_queue'] ) ? array_values( array_map( 'intval', $rec['post_queue'] ) ) : [];
+				if ( empty( $queue ) ) {
+					return 0;
+				}
+				$finished = array_unique(
+					array_merge(
+						self::get_accounted_ids_from_log( $rec, 'post' ),
+						self::get_error_source_ids( $rec, 'post' )
+					)
+				);
+				$inflight = self::get_job_inflight_object_ids( $job_id, self::HOOK_POST, 'post_id' );
+				if ( ! empty( $inflight ) ) {
+					return 0;
+				}
+				foreach ( $queue as $idx => $post_id ) {
+					if ( in_array( (int) $post_id, $finished, true ) ) {
+						continue;
+					}
+					// 已有待处理任务则不重复排，仅同步游标。
+					if ( self::post_action_pending( $job_id, (int) $post_id ) ) {
+						Heb_Product_Publisher_Bootstrap_Status::update( $job_id, [ 'post_queue_cursor' => (int) $idx ] );
+						return 0;
+					}
+					Heb_Product_Publisher_Bootstrap_Status::update( $job_id, [ 'post_queue_cursor' => (int) $idx ] );
+					self::schedule_bootstrap_action(
+						self::HOOK_POST,
+						[
+							'job_id'  => $job_id,
+							'post_id' => (int) $post_id,
+						],
+						2
+					);
+					Heb_Product_Publisher_Bootstrap_Status::add_log(
+						$job_id,
+						'warning',
+						sprintf(
+							/* translators: 1: post id, 2: queue index */
+							__( '队列停滞：已补排 post #%1$d（队列 #%2$d）', 'heb-product-publisher' ),
+							(int) $post_id,
+							(int) $idx + 1
+						)
+					);
+					return 1;
+				}
+				return 0;
 			}
-			Heb_Product_Publisher_Bootstrap_Status::update( $job_id, [ 'post_queue_cursor' => (int) $idx ] );
-			self::schedule_bootstrap_action(
-				self::HOOK_POST,
-				[
-					'job_id'  => $job_id,
-					'post_id' => (int) $post_id,
-				],
-				2
-			);
-			Heb_Product_Publisher_Bootstrap_Status::add_log(
-				$job_id,
-				'warning',
-				sprintf(
-					/* translators: 1: post id, 2: queue index */
-					__( '队列停滞：已补排 post #%1$d（队列 #%2$d）', 'heb-product-publisher' ),
-					(int) $post_id,
-					(int) $idx + 1
-				)
-			);
-			return 1;
-		}
-		return 0;
+		);
+		return is_int( $result ) ? $result : 0;
 	}
 
 	/**
@@ -1400,6 +1419,30 @@ class Heb_Product_Publisher_Bootstrap_Queue {
 			return;
 		}
 		as_enqueue_async_action( $hook, [ $args ], self::GROUP );
+	}
+
+	/**
+	 * 某个 post 是否已有「待处理（尚未执行）」的 HOOK_POST 任务在 AS 队列里。
+	 * 用于串行/补排时去重，避免并发 watchdog 重复排同一个 post。
+	 *
+	 * @param string $job_id  Job id.
+	 * @param int    $post_id Post id.
+	 * @return bool
+	 */
+	private static function post_action_pending( $job_id, $post_id ) {
+		if ( ! function_exists( 'as_has_scheduled_action' ) ) {
+			return false;
+		}
+		return (bool) as_has_scheduled_action(
+			self::HOOK_POST,
+			[
+				[
+					'job_id'  => $job_id,
+					'post_id' => (int) $post_id,
+				],
+			],
+			self::GROUP
+		);
 	}
 
 	/**
