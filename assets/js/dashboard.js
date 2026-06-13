@@ -2,7 +2,17 @@
 	'use strict';
 
 	$(function () {
+		if (typeof HebPPDashboard === 'undefined') {
+			// eslint-disable-next-line no-console
+			console.error('HEB Dashboard: HebPPDashboard config missing — script was not localized.');
+			return;
+		}
+
 		var manifests = {};
+
+		function siteIdFrom($el) {
+			return String($el.attr('data-site-id') || '');
+		}
 
 		function indexManifest(data) {
 			var posts = {};
@@ -15,7 +25,13 @@
 				var key = t.taxonomy + ':' + t.source_term_id;
 				terms[key] = t;
 			});
-			return { posts: posts, terms: terms, host: data.host };
+			return {
+				posts: posts,
+				terms: terms,
+				host: data.host || '',
+				error: data.error || '',
+				cached: !!data.cached
+			};
 		}
 
 		function classifyPost(remote, localModified) {
@@ -46,9 +62,13 @@
 
 			$row.find('.heb-pp-dash-cell').each(function () {
 				var $cell = $(this);
-				var siteId = $cell.data('site-id');
+				var siteId = siteIdFrom($cell);
+				if (!siteId) { return; }
 				var manifest = manifests[siteId];
-				if (!manifest) { return; }
+				if (!manifest || manifest.error) {
+					siteIds.push(siteId);
+					return;
+				}
 				var key = type + ':' + sourceId;
 				var remote = (kind === 'terms') ? manifest.terms[key] : manifest.posts[key];
 				var c = (kind === 'terms') ? classifyTerm(remote, localHash) : classifyPost(remote, localModified);
@@ -70,12 +90,21 @@
 
 				$row.find('.heb-pp-dash-cell').each(function () {
 					var $cell = $(this);
-					var siteId = $cell.data('site-id');
-					var manifest = manifests[siteId];
+					var siteId = siteIdFrom($cell);
+					var manifest = siteId ? manifests[siteId] : null;
 					var $span = $cell.find('.heb-pp-dash-status');
 
 					if (!manifest) {
-						$span.text('·').css('color', '#bbb').attr('title', 'no manifest yet');
+						$span.text('·').css('color', '#bbb').attr('title', 'no manifest yet').removeAttr('data-code');
+						return;
+					}
+
+					if (manifest.error) {
+						$span
+							.text('⚠')
+							.css('color', '#c00')
+							.attr('title', HebPPDashboard.i18n.noManifest + ': ' + manifest.error)
+							.attr('data-code', 'manifest_error');
 						return;
 					}
 
@@ -103,7 +132,20 @@
 			});
 		}
 
+		function setStatusMessage(text, title) {
+			var $status = $('#heb-pp-dash-status');
+			$status.text(text || '');
+			if (title) {
+				$status.attr('title', title);
+			} else {
+				$status.removeAttr('title');
+			}
+		}
+
 		function loadSiteManifest(siteId, force) {
+			if (!siteId) {
+				return $.Deferred().reject().promise();
+			}
 			return $.post(HebPPDashboard.ajaxUrl, {
 				action: 'heb_pp_dash_manifest',
 				nonce: HebPPDashboard.nonce,
@@ -113,25 +155,63 @@
 				if (res && res.success) {
 					manifests[siteId] = indexManifest(res.data);
 				} else {
-					manifests[siteId] = { posts: {}, terms: {}, error: (res && res.data && res.data.message) || 'error' };
+					var msg = (res && res.data && res.data.message) ? res.data.message : 'error';
+					manifests[siteId] = { posts: {}, terms: {}, error: msg };
 				}
 				applyCells();
-			}).fail(function () {
-				manifests[siteId] = { posts: {}, terms: {}, error: 'fetch failed' };
+			}).fail(function (xhr) {
+				var msg = 'fetch failed';
+				if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+					msg = xhr.responseJSON.data.message;
+				}
+				manifests[siteId] = { posts: {}, terms: {}, error: msg };
 				applyCells();
 			});
 		}
 
-		function loadAllManifests(force) {
+		function collectSiteIds() {
 			var siteIds = [];
 			$('.heb-pp-dash-cell').each(function () {
-				var id = $(this).data('site-id');
-				if (siteIds.indexOf(id) < 0) { siteIds.push(id); }
+				var id = siteIdFrom($(this));
+				if (id && siteIds.indexOf(id) < 0) {
+					siteIds.push(id);
+				}
 			});
-			$('#heb-pp-dash-status').text(HebPPDashboard.i18n.loading);
+			return siteIds;
+		}
+
+		function loadAllManifests(force, $triggerBtn, triggerOldText) {
+			var siteIds = collectSiteIds();
+			if (!siteIds.length) {
+				setStatusMessage(HebPPDashboard.i18n.noSiteColumns);
+				return;
+			}
+
+			var $refresh = $('#heb-pp-dash-refresh');
+			var $clear = $('#heb-pp-dash-clear-cache');
+			$refresh.prop('disabled', true);
+			$clear.prop('disabled', true);
+
+			setStatusMessage(HebPPDashboard.i18n.loading);
 			var promises = siteIds.map(function (id) { return loadSiteManifest(id, force); });
 			$.when.apply($, promises).always(function () {
-				$('#heb-pp-dash-status').text('');
+				$refresh.prop('disabled', false);
+				$clear.prop('disabled', false);
+				if ($triggerBtn && $triggerBtn.length && triggerOldText) {
+					$triggerBtn.text(triggerOldText);
+				}
+
+				var errors = [];
+				siteIds.forEach(function (id) {
+					if (manifests[id] && manifests[id].error) {
+						errors.push(id + ': ' + manifests[id].error);
+					}
+				});
+				if (errors.length) {
+					setStatusMessage(HebPPDashboard.i18n.manifestErrors, errors.join('\n'));
+				} else {
+					setStatusMessage('');
+				}
 			});
 		}
 
@@ -146,7 +226,7 @@
 				kind: kind
 			};
 			if (siteIds && siteIds.length) {
-				data['site_ids[]'] = siteIds;
+				data.site_ids = siteIds;
 			}
 			$.post(HebPPDashboard.ajaxUrl, data).done(function (res) {
 				if (res && res.success) {
@@ -154,12 +234,17 @@
 					loadAllManifests(true);
 					setTimeout(function () { $btn.text(oldText).css('color', ''); }, 2000);
 				} else {
-					$btn.text(HebPPDashboard.i18n.sentFailed).css('color', '#a00');
-					setTimeout(function () { $btn.text(oldText).css('color', ''); }, 3000);
+					var msg = (res && res.data && res.data.message) ? res.data.message : HebPPDashboard.i18n.sentFailed;
+					$btn.text(HebPPDashboard.i18n.sentFailed).css('color', '#a00').attr('title', msg);
+					setTimeout(function () { $btn.text(oldText).css('color', '').removeAttr('title'); }, 3000);
 				}
-			}).fail(function () {
-				$btn.text(HebPPDashboard.i18n.sentFailed).css('color', '#a00');
-				setTimeout(function () { $btn.text(oldText).css('color', ''); }, 3000);
+			}).fail(function (xhr) {
+				var msg = HebPPDashboard.i18n.sentFailed;
+				if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+					msg = xhr.responseJSON.data.message;
+				}
+				$btn.text(HebPPDashboard.i18n.sentFailed).css('color', '#a00').attr('title', msg);
+				setTimeout(function () { $btn.text(oldText).css('color', '').removeAttr('title'); }, 3000);
 			}).always(function () {
 				$btn.prop('disabled', false);
 			});
@@ -170,6 +255,13 @@
 			$('.heb-pp-dash-row-check:checked').each(function () {
 				var $row = $(this).closest('.heb-pp-dash-row');
 				var siteIds = resendTargetsForRow($row);
+				if (!siteIds.length) {
+					siteIds = [];
+					$row.find('.heb-pp-dash-cell').each(function () {
+						var id = siteIdFrom($(this));
+						if (id) { siteIds.push(id); }
+					});
+				}
 				if (!siteIds.length) { return; }
 				items.push({
 					source_id: parseInt($row.data('source-id'), 10),
@@ -177,29 +269,60 @@
 					site_ids: siteIds
 				});
 			});
-			if (items.length === 0) { return; }
+			if (items.length === 0) {
+				setStatusMessage(HebPPDashboard.i18n.selectRows);
+				return;
+			}
 			if (!window.confirm(HebPPDashboard.i18n.confirmBulk + '\n\n' + items.length + ' item(s).')) { return; }
+
+			var $btn = $('#heb-pp-dash-bulk-resend');
+			$btn.prop('disabled', true);
+			setStatusMessage(HebPPDashboard.i18n.resending);
 			$.post(HebPPDashboard.ajaxUrl, {
 				action: 'heb_pp_dash_bulk_resend',
 				nonce: HebPPDashboard.nonce,
 				items: items
 			}).done(function (res) {
 				if (res && res.success) {
-					$('#heb-pp-dash-status').text('Queued: ' + (res.data.queued || 0));
+					setStatusMessage(HebPPDashboard.i18n.queued + ': ' + (res.data.queued || 0));
+					loadAllManifests(true);
+				} else {
+					var msg = (res && res.data && res.data.message) ? res.data.message : HebPPDashboard.i18n.sentFailed;
+					setStatusMessage(msg);
 				}
+			}).fail(function (xhr) {
+				var msg = HebPPDashboard.i18n.sentFailed;
+				if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+					msg = xhr.responseJSON.data.message;
+				}
+				setStatusMessage(msg);
+			}).always(function () {
+				$btn.prop('disabled', $('.heb-pp-dash-row-check:checked').length === 0);
 			});
 		}
 
 		function clearCache() {
+			var $btn = $('#heb-pp-dash-clear-cache');
+			var oldText = $btn.text();
+			$btn.prop('disabled', true).text(HebPPDashboard.i18n.clearing);
+			setStatusMessage(HebPPDashboard.i18n.clearing);
 			$.post(HebPPDashboard.ajaxUrl, {
 				action: 'heb_pp_dash_clear_cache',
 				nonce: HebPPDashboard.nonce
 			}).done(function () {
-				loadAllManifests(true);
+				loadAllManifests(true, $btn, oldText);
+			}).fail(function () {
+				setStatusMessage(HebPPDashboard.i18n.sentFailed);
+				$btn.prop('disabled', false).text(oldText);
 			});
 		}
 
-		$('#heb-pp-dash-refresh').on('click', function () { loadAllManifests(true); });
+		$('#heb-pp-dash-refresh').on('click', function () {
+			var $btn = $(this);
+			var oldText = $btn.text();
+			$btn.prop('disabled', true).text(HebPPDashboard.i18n.refreshing);
+			loadAllManifests(true, $btn, oldText);
+		});
 		$('#heb-pp-dash-clear-cache').on('click', clearCache);
 		$('#heb-pp-dash-bulk-resend').on('click', bulkResend);
 		$(document).on('click', '.heb-pp-dash-resend', function () {
@@ -209,7 +332,8 @@
 			if (!siteIds.length) {
 				siteIds = [];
 				$row.find('.heb-pp-dash-cell').each(function () {
-					siteIds.push($(this).data('site-id'));
+					var id = siteIdFrom($(this));
+					if (id) { siteIds.push(id); }
 				});
 			}
 			resend(parseInt($btn.data('source-id'), 10), $btn.data('kind'), siteIds, $btn);

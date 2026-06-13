@@ -61,7 +61,9 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 	 * @param string $hook Current page hook.
 	 */
 	public function enqueue_assets( $hook ) {
-		if ( Heb_Product_Publisher_Admin_Menu::hook_suffix( self::PAGE_SLUG ) !== $hook ) {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$page = isset( $_GET['page'] ) ? sanitize_key( wp_unslash( (string) $_GET['page'] ) ) : '';
+		if ( self::PAGE_SLUG !== $page && Heb_Product_Publisher_Admin_Menu::hook_suffix( self::PAGE_SLUG ) !== $hook ) {
 			return;
 		}
 		wp_enqueue_style( 'heb-pp-dashboard', HEB_PP_URL . 'assets/css/dashboard.css', [], HEB_PP_VERSION );
@@ -74,12 +76,18 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 				'nonce'   => wp_create_nonce( self::NONCE_ACTION ),
 				'i18n'    => [
 					'loading'        => __( '加载中…', 'heb-product-publisher' ),
-					'noManifest'     => __( '无法获取', 'heb-product-publisher' ),
+					'refreshing'     => __( '刷新中…', 'heb-product-publisher' ),
+					'clearing'       => __( '清除中…', 'heb-product-publisher' ),
+					'manifestErrors' => __( '部分站点 manifest 拉取失败，悬停单元格查看详情。', 'heb-product-publisher' ),
+					'noManifest'     => __( '无法获取 manifest', 'heb-product-publisher' ),
 					'resending'      => __( '重发中…', 'heb-product-publisher' ),
 					'sentDone'       => __( '已重发', 'heb-product-publisher' ),
 					'sentFailed'     => __( '重发失败', 'heb-product-publisher' ),
 					'confirmBulk'    => __( '把选中的项目重新分发到"未同步/过期/锁定"的站点？', 'heb-product-publisher' ),
 					'clearCache'     => __( '清除 manifest 缓存', 'heb-product-publisher' ),
+					'queued'         => __( '已入队', 'heb-product-publisher' ),
+					'selectRows'     => __( '请先勾选要重发的行。', 'heb-product-publisher' ),
+					'noSiteColumns'  => __( '未找到远端站点列，请检查设置中的远端站点配置。', 'heb-product-publisher' ),
 				],
 			]
 		);
@@ -102,17 +110,17 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 				<?php return; ?>
 			<?php endif; ?>
 
-			<p>
+			<p class="heb-pp-dash-toolbar">
 				<button type="button" class="button" id="heb-pp-dash-refresh"><?php esc_html_e( '刷新所有站点 manifest', 'heb-product-publisher' ); ?></button>
 				<button type="button" class="button" id="heb-pp-dash-clear-cache"><?php esc_html_e( '清除 manifest 缓存', 'heb-product-publisher' ); ?></button>
 				<button type="button" class="button" id="heb-pp-dash-bulk-resend" disabled><?php esc_html_e( '批量重发选中', 'heb-product-publisher' ); ?></button>
-				<span style="margin-left:8px;" id="heb-pp-dash-status"></span>
+				<span id="heb-pp-dash-status"></span>
 			</p>
 
-			<h2 style="margin-top:24px;"><?php esc_html_e( '📄 内容（posts）', 'heb-product-publisher' ); ?></h2>
+			<h2 class="heb-pp-dash-section-title"><?php esc_html_e( '📄 内容（posts）', 'heb-product-publisher' ); ?></h2>
 			<?php $this->render_table( 'posts', $sites ); ?>
 
-			<h2 style="margin-top:24px;"><?php esc_html_e( '🏷 分类（terms）', 'heb-product-publisher' ); ?></h2>
+			<h2 class="heb-pp-dash-section-title"><?php esc_html_e( '🏷 分类（terms）', 'heb-product-publisher' ); ?></h2>
 			<?php $this->render_table( 'terms', $sites ); ?>
 		</div>
 		<?php
@@ -126,10 +134,11 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 	private function render_table( $kind, $sites ) {
 		$rows = 'posts' === $kind ? $this->source_posts() : $this->source_terms();
 		?>
+		<div class="heb-pp-dash-table-wrap">
 		<table class="widefat striped heb-pp-dash-table" data-kind="<?php echo esc_attr( $kind ); ?>">
 			<thead>
 				<tr>
-					<th class="check-column"><input type="checkbox" class="heb-pp-dash-select-all" /></th>
+					<th class="heb-pp-dash-check-col"><input type="checkbox" class="heb-pp-dash-select-all" aria-label="<?php esc_attr_e( '全选', 'heb-product-publisher' ); ?>" /></th>
 					<th><?php esc_html_e( '标题', 'heb-product-publisher' ); ?></th>
 					<th style="width:120px;"><?php esc_html_e( '类型', 'heb-product-publisher' ); ?></th>
 					<th style="width:90px;"><?php esc_html_e( 'Source ID', 'heb-product-publisher' ); ?></th>
@@ -154,7 +163,7 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 								data-sync-hash="<?php echo esc_attr( isset( $row['sync_hash'] ) ? $row['sync_hash'] : '' ); ?>"
 							<?php endif; ?>
 						>
-							<td class="check-column"><input type="checkbox" class="heb-pp-dash-row-check" /></td>
+							<td class="heb-pp-dash-check-col"><input type="checkbox" class="heb-pp-dash-row-check" /></td>
 							<td>
 								<strong><a href="<?php echo esc_url( $row['edit_url'] ); ?>"><?php echo esc_html( $row['title'] ); ?></a></strong>
 							</td>
@@ -173,6 +182,7 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 				<?php endif; ?>
 			</tbody>
 		</table>
+		</div>
 		<?php
 	}
 
@@ -289,9 +299,13 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 
 		$source_id = isset( $_POST['source_id'] ) ? (int) $_POST['source_id'] : 0;
 		$kind      = isset( $_POST['kind'] ) ? sanitize_key( (string) $_POST['kind'] ) : 'posts';
-		$site_ids  = isset( $_POST['site_ids'] ) && is_array( $_POST['site_ids'] )
-			? array_map( 'sanitize_text_field', wp_unslash( $_POST['site_ids'] ) )
-			: [];
+		$site_ids = [];
+		if ( isset( $_POST['site_ids'] ) && is_array( $_POST['site_ids'] ) ) {
+			$site_ids = array_map( 'sanitize_text_field', wp_unslash( $_POST['site_ids'] ) );
+		}
+		$site_ids = array_values( array_filter( $site_ids, static function ( $id ) {
+			return is_string( $id ) && '' !== $id;
+		} ) );
 		if ( $source_id <= 0 ) {
 			wp_send_json_error( [ 'message' => __( '源 ID 无效。', 'heb-product-publisher' ) ] );
 		}
