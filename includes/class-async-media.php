@@ -447,24 +447,107 @@ class Heb_Product_Publisher_Async_Media {
 	}
 
 	/**
+	 * 确保 Elementor 已初始化（REST / AS 入口可能尚未触发 elementor/loaded）。
+	 *
+	 * @return bool
+	 */
+	private static function ensure_elementor_ready() {
+		if ( ! class_exists( '\\Elementor\\Plugin' ) ) {
+			return false;
+		}
+		try {
+			\Elementor\Plugin::instance();
+		} catch ( \Throwable $e ) {
+			unset( $e );
+			return false;
+		}
+		return class_exists( '\\Elementor\\Core\\Files\\CSS\\Post' );
+	}
+
+	/**
+	 * 强制重新生成单个 post 的 Elementor CSS 文件（uploads/elementor/css/post-*.css）。
+	 *
+	 * @param int $post_id Post id.
+	 * @return bool
+	 */
+	public static function regenerate_post_css( $post_id ) {
+		$post_id = (int) $post_id;
+		if ( $post_id <= 0 || ! get_post( $post_id ) ) {
+			return false;
+		}
+		if ( ! self::ensure_elementor_ready() ) {
+			return false;
+		}
+		delete_post_meta( $post_id, '_elementor_css' );
+		delete_post_meta( $post_id, '_elementor_element_cache' );
+		try {
+			$css = new \Elementor\Core\Files\CSS\Post( $post_id );
+			$css->update();
+			return true;
+		} catch ( \Throwable $e ) {
+			unset( $e );
+			return false;
+		}
+	}
+
+	/**
+	 * Bootstrap 收尾：批量重编仍含 Elementor 数据的 post CSS。
+	 *
+	 * @param int $limit  Max posts per batch.
+	 * @param int $offset Offset for pagination.
+	 * @return array{regenerated:int,processed:int,remaining:int}
+	 */
+	public static function regenerate_batch_css( $limit = 25, $offset = 0 ) {
+		$limit  = max( 1, min( 50, (int) $limit ) );
+		$offset = max( 0, (int) $offset );
+		$query  = new \WP_Query(
+			[
+				'post_type'              => 'any',
+				'post_status'            => 'any',
+				'posts_per_page'         => $limit,
+				'offset'                 => $offset,
+				'fields'                 => 'ids',
+				'orderby'                => 'ID',
+				'order'                  => 'ASC',
+				'no_found_rows'          => false,
+				'update_post_meta_cache' => false,
+				'meta_query'             => [
+					'relation' => 'OR',
+					[
+						'key'     => '_elementor_data',
+						'compare' => 'EXISTS',
+					],
+					[
+						'key'     => '_elementor_page_settings',
+						'compare' => 'EXISTS',
+					],
+				],
+			]
+		);
+		$regenerated = 0;
+		$processed   = count( $query->posts );
+		foreach ( $query->posts as $pid ) {
+			if ( self::regenerate_post_css( (int) $pid ) ) {
+				$regenerated++;
+			}
+		}
+		$total     = (int) $query->found_posts;
+		$remaining = max( 0, $total - $offset - $processed );
+		return [
+			'regenerated' => $regenerated,
+			'processed'   => $processed,
+			'remaining'   => $remaining,
+		];
+	}
+
+	/**
 	 * 清 Elementor 渲染缓存（CSS）让本地化后的图立即生效。
 	 *
 	 * @param int $post_id Post id.
 	 * @return void
 	 */
 	private function clear_elementor_cache( $post_id ) {
-		delete_post_meta( $post_id, '_elementor_css' );
-		delete_post_meta( $post_id, '_elementor_element_cache' );
-		if ( did_action( 'elementor/loaded' ) && class_exists( '\\Elementor\\Plugin' ) ) {
-			try {
-				$plugin = \Elementor\Plugin::instance();
-				if ( isset( $plugin->files_manager ) && method_exists( $plugin->files_manager, 'clear_cache' ) ) {
-					$plugin->files_manager->clear_cache();
-				}
-			} catch ( \Throwable $e ) {
-				unset( $e );
-			}
-		}
+		self::regenerate_post_css( (int) $post_id );
 	}
 
 	/**

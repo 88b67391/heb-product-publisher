@@ -104,16 +104,18 @@ class Heb_Product_Publisher_Sync {
 	 * @return string
 	 */
 	public static function resolve_elementor_image_url( array $value ) {
-		$url = isset( $value['url'] ) && is_string( $value['url'] ) ? self::normalize_media_url( $value['url'] ) : '';
-		if ( '' !== $url && self::is_transportable_image_url( $url ) ) {
-			return $url;
-		}
+		// 有 attachment id 时优先用当前站点解析 URL，避免 Elementor 节点里残留
+		// 旧域名（如 ai.flooc.com）导致子站 CSS 编译出不可访问的背景图地址。
 		$id = self::elementor_image_attachment_id( $value );
 		if ( $id > 0 && wp_attachment_is_image( $id ) ) {
 			$resolved = wp_get_attachment_image_url( $id, 'full' );
 			if ( is_string( $resolved ) && '' !== $resolved ) {
 				return self::normalize_media_url( $resolved );
 			}
+		}
+		$url = isset( $value['url'] ) && is_string( $value['url'] ) ? self::normalize_media_url( $value['url'] ) : '';
+		if ( '' !== $url && self::is_transportable_image_url( $url ) ) {
+			return $url;
 		}
 		return '';
 	}
@@ -203,6 +205,14 @@ class Heb_Product_Publisher_Sync {
 			return '';
 		}
 		if ( preg_match( '#^https?://#i', $url ) ) {
+			// 旧环境域名（如 ai.flooc.com）上的 uploads 路径 → 当前站点，便于 sideload/CSS 编译。
+			if ( preg_match( '#/wp-content/uploads/(.+)$#i', $url, $m ) ) {
+				$host = wp_parse_url( $url, PHP_URL_HOST );
+				$home = wp_parse_url( home_url(), PHP_URL_HOST );
+				if ( is_string( $host ) && is_string( $home ) && strtolower( $host ) !== strtolower( $home ) ) {
+					return home_url( '/wp-content/uploads/' . $m[1] );
+				}
+			}
 			return $url;
 		}
 		if ( '/' === $url[0] ) {

@@ -947,6 +947,9 @@ class Heb_Product_Publisher_Translator {
 		if ( preg_match( '/(_font_family|_font_weight|_font_style|_text_transform|_text_decoration|_letter_spacing|_word_spacing|_line_height|_font_size)$/i', $key ) ) {
 			return true;
 		}
+		if ( preg_match( '/^(?:typography_)?font_size(?:_(?:tablet|mobile|widescreen))?$/i', $key ) ) {
+			return true;
+		}
 		// Elementor 控件后缀：_tablet / _mobile / _hover / _color / _typography / _shadow
 		if ( preg_match( '/(_color|_typography|_shadow|_padding|_margin|_size|_position|_align|_animation|_transition|_border|_background|_overlay|_zoom|_opacity)(_(tablet|mobile|hover|active|focus|extra))?$/i', $key ) ) {
 			return true;

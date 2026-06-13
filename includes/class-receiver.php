@@ -139,6 +139,15 @@ class Heb_Product_Publisher_Receiver {
 				'permission_callback' => '__return_true',
 			]
 		);
+		register_rest_route(
+			'heb-publisher/v1',
+			'/regenerate-elementor-css',
+			[
+				'methods'             => 'POST',
+				'callback'            => [ $this, 'rest_regenerate_elementor_css' ],
+				'permission_callback' => '__return_true',
+			]
+		);
 	}
 
 	/**
@@ -1823,6 +1832,34 @@ class Heb_Product_Publisher_Receiver {
 	}
 
 	/**
+	 * POST /regenerate-elementor-css — Bootstrap 收尾批量重编 Elementor CSS。
+	 *
+	 * @param \WP_REST_Request $request Request.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	public function rest_regenerate_elementor_css( $request ) {
+		Heb_Product_Publisher_Runtime::raise();
+		$body = $this->parse_authenticated_request( $request );
+		if ( is_wp_error( $body ) ) {
+			return $body;
+		}
+		if ( ! class_exists( 'Heb_Product_Publisher_Async_Media' ) ) {
+			return new \WP_Error( 'heb_pub_media_unavailable', __( 'Async media handler not loaded.', 'heb-product-publisher' ), [ 'status' => 503 ] );
+		}
+		$limit  = isset( $body['limit'] ) ? max( 1, min( 50, (int) $body['limit'] ) ) : 25;
+		$offset = isset( $body['offset'] ) ? max( 0, (int) $body['offset'] ) : 0;
+		$result = Heb_Product_Publisher_Async_Media::regenerate_batch_css( $limit, $offset );
+		return rest_ensure_response(
+			[
+				'success'     => true,
+				'regenerated' => (int) ( $result['regenerated'] ?? 0 ),
+				'processed'   => (int) ( $result['processed'] ?? 0 ),
+				'remaining'   => (int) ( $result['remaining'] ?? 0 ),
+			]
+		);
+	}
+
+	/**
 	 * @param array<string,mixed> $body Import payload.
 	 * @return array<int,string>
 	 */
@@ -2200,18 +2237,23 @@ class Heb_Product_Publisher_Receiver {
 			}
 		}
 
-		// 清缓存：写完 _elementor_data 后必须清 CSS 缓存，否则前端可能还在用旧版式。
-		if ( $has_data ) {
-			delete_post_meta( $post_id, '_elementor_css' );
-			if ( class_exists( '\\Elementor\\Plugin' ) ) {
-				try {
-					$plugin = \Elementor\Plugin::$instance;
-					if ( $plugin && isset( $plugin->files_manager ) && method_exists( $plugin->files_manager, 'clear_cache' ) ) {
-						$plugin->files_manager->clear_cache();
+		// 清缓存：写完 _elementor_data 后必须重编 CSS，否则 uploads/elementor/css/
+		// 里可能仍保留旧域名背景图或克隆站遗留的错误字号。
+		// 有 pending 图片时仍重编（修正 typography）；sideload 完成后会再次重编以替换背景 URL。
+		if ( $has_data || ( is_array( $settings ) && ! empty( $settings ) ) ) {
+			if ( class_exists( 'Heb_Product_Publisher_Async_Media' ) ) {
+				Heb_Product_Publisher_Async_Media::regenerate_post_css( $post_id );
+			} else {
+				delete_post_meta( $post_id, '_elementor_css' );
+				if ( class_exists( '\\Elementor\\Plugin' ) ) {
+					try {
+						$plugin = \Elementor\Plugin::$instance;
+						if ( $plugin && isset( $plugin->files_manager ) && method_exists( $plugin->files_manager, 'clear_cache' ) ) {
+							$plugin->files_manager->clear_cache();
+						}
+					} catch ( \Throwable $e ) {
+						unset( $e );
 					}
-				} catch ( \Throwable $e ) {
-					// Elementor 未启用或内部异常时忽略，不阻塞导入流程。
-					unset( $e );
 				}
 			}
 		}

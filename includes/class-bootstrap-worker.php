@@ -401,6 +401,11 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, 'info', $media_note );
 		}
 
+		$css_note = $this->regenerate_remote_elementor_css( $rec );
+		if ( '' !== $css_note ) {
+			Heb_Product_Publisher_Bootstrap_Status::add_log( $job_id, 'info', $css_note );
+		}
+
 		Heb_Product_Publisher_Bootstrap_Status::add_log(
 			$job_id,
 			$status === Heb_Product_Publisher_Bootstrap_Status::STATUS_DONE ? 'info' : 'error',
@@ -788,6 +793,75 @@ class Heb_Product_Publisher_Bootstrap_Worker {
 			/* translators: %d: processed posts */
 			__( 'Elementor 图片收尾完成：共处理 %d 个 post', 'heb-product-publisher' ),
 			$total_processed
+		);
+	}
+
+	/**
+	 * Bootstrap 收尾：在目标子站批量重编 Elementor CSS（修复旧域名背景图 / 克隆站遗留字号）。
+	 *
+	 * @param array<string,mixed> $rec Job record.
+	 * @return string Log line or empty.
+	 */
+	private function regenerate_remote_elementor_css( array $rec ) {
+		$site = Heb_Product_Publisher_Admin_Settings::get_site( (string) ( $rec['site_id'] ?? '' ) );
+		if ( ! $site ) {
+			return '';
+		}
+		$total_regenerated = 0;
+		$total_processed   = 0;
+		$remaining         = -1;
+		$offset            = 0;
+		$limit             = 25;
+		for ( $round = 0; $round < 20; $round++ ) {
+			$res = Heb_Product_Publisher_Remote_Client::post(
+				$site,
+				'/regenerate-elementor-css',
+				[
+					'source_site' => (string) wp_parse_url( home_url(), PHP_URL_HOST ),
+					'limit'       => $limit,
+					'offset'      => $offset,
+				],
+				120
+			);
+			if ( is_wp_error( $res ) ) {
+				return sprintf(
+					/* translators: %s: error message */
+					__( 'Elementor CSS 重编失败：%s', 'heb-product-publisher' ),
+					$res->get_error_message()
+				);
+			}
+			$batch_processed = (int) ( $res['processed'] ?? 0 );
+			$total_processed += $batch_processed;
+			$total_regenerated += (int) ( $res['regenerated'] ?? 0 );
+			$remaining          = (int) ( $res['remaining'] ?? 0 );
+			if ( $remaining <= 0 || $batch_processed <= 0 ) {
+				break;
+			}
+			$offset += $batch_processed;
+		}
+		if ( $total_processed <= 0 ) {
+			return __( 'Elementor CSS 重编：无待处理项', 'heb-product-publisher' );
+		}
+		if ( $total_regenerated <= 0 ) {
+			return sprintf(
+				/* translators: 1: attempted count, 2: remaining count */
+				__( 'Elementor CSS 重编：已扫描 %1$d 个 post，但均未成功（剩余 %2$d；请确认子站已启用 Elementor）', 'heb-product-publisher' ),
+				$total_processed,
+				max( 0, $remaining )
+			);
+		}
+		if ( $remaining > 0 ) {
+			return sprintf(
+				/* translators: 1: regenerated count, 2: remaining count */
+				__( 'Elementor CSS 重编：已重编 %1$d 个 post，仍有 %2$d 个待处理', 'heb-product-publisher' ),
+				$total_regenerated,
+				$remaining
+			);
+		}
+		return sprintf(
+			/* translators: %d: regenerated count */
+			__( 'Elementor CSS 重编完成：共 %d 个 post', 'heb-product-publisher' ),
+			$total_regenerated
 		);
 	}
 }
