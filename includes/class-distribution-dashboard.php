@@ -68,26 +68,47 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 		}
 		wp_enqueue_style( 'heb-pp-dashboard', HEB_PP_URL . 'assets/css/dashboard.css', [], HEB_PP_VERSION );
 		wp_enqueue_script( 'heb-pp-dashboard', HEB_PP_URL . 'assets/js/dashboard.js', [ 'jquery' ], HEB_PP_VERSION, true );
+		$sites = Heb_Product_Publisher_Admin_Settings::remote_sites();
 		wp_localize_script(
 			'heb-pp-dashboard',
 			'HebPPDashboard',
 			[
 				'ajaxUrl' => admin_url( 'admin-ajax.php' ),
 				'nonce'   => wp_create_nonce( self::NONCE_ACTION ),
+				'sites'   => array_map(
+					static function ( $s ) {
+						return [
+							'id'    => (string) $s['id'],
+							'label' => (string) $s['label'],
+						];
+					},
+					$sites
+				),
 				'i18n'    => [
 					'loading'        => __( '加载中…', 'heb-product-publisher' ),
 					'refreshing'     => __( '刷新中…', 'heb-product-publisher' ),
 					'clearing'       => __( '清除中…', 'heb-product-publisher' ),
-					'manifestErrors' => __( '部分站点 manifest 拉取失败，悬停单元格查看详情。', 'heb-product-publisher' ),
+					'manifestErrors' => __( '部分站点 manifest 拉取失败，悬停 ⚠ 查看详情；可点单元格 ↻ 直接重发。', 'heb-product-publisher' ),
 					'noManifest'     => __( '无法获取 manifest', 'heb-product-publisher' ),
 					'resending'      => __( '重发中…', 'heb-product-publisher' ),
-					'sentDone'       => __( '已重发', 'heb-product-publisher' ),
-					'sentFailed'     => __( '重发失败', 'heb-product-publisher' ),
+					'resendCell'     => __( '重发到此站', 'heb-product-publisher' ),
+					'resendAllSites' => __( '重发全部站点', 'heb-product-publisher' ),
+					'resendNeedy'    => __( '重发未同步站点', 'heb-product-publisher' ),
+					'sentDone'       => __( '完成', 'heb-product-publisher' ),
+					'sentFailed'     => __( '失败', 'heb-product-publisher' ),
+					'sentPartial'    => __( '部分成功', 'heb-product-publisher' ),
 					'confirmBulk'    => __( '把选中的项目重新分发到"未同步/过期/锁定"的站点？', 'heb-product-publisher' ),
 					'clearCache'     => __( '清除 manifest 缓存', 'heb-product-publisher' ),
 					'queued'         => __( '已入队', 'heb-product-publisher' ),
 					'selectRows'     => __( '请先勾选要重发的行。', 'heb-product-publisher' ),
 					'noSiteColumns'  => __( '未找到远端站点列，请检查设置中的远端站点配置。', 'heb-product-publisher' ),
+					'logTitle'       => __( '操作日志', 'heb-product-publisher' ),
+					'logClear'       => __( '清空日志', 'heb-product-publisher' ),
+					'logStart'       => __( '开始重发', 'heb-product-publisher' ),
+					'logOk'          => __( '成功', 'heb-product-publisher' ),
+					'logFail'        => __( '失败', 'heb-product-publisher' ),
+					'logSkip'        => __( '跳过', 'heb-product-publisher' ),
+					'legend'         => __( '✓ 已同步 · ⊘ 过期 · — 未分发 · ⏳ 图片待处理 · 🔒 子站锁定 · ⚠ manifest 拉取失败', 'heb-product-publisher' ),
 				],
 			]
 		);
@@ -104,6 +125,8 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 			<p class="description">
 				<?php esc_html_e( '查看主站内容在每个远端站点的分发状态；可单条/批量重发。状态来自子站 /manifest，缓存 5 分钟。', 'heb-product-publisher' ); ?>
 			</p>
+
+			<p class="description heb-pp-dash-legend"><?php esc_html_e( '✓ 已同步 · ⊘ 过期 · — 未分发 · ⏳ 图片待处理 · 🔒 子站锁定 · ⚠ manifest 拉取失败（可点单元格 ↻ 直接重发）', 'heb-product-publisher' ); ?></p>
 
 			<?php if ( empty( $sites ) ) : ?>
 				<div class="notice notice-warning"><p><?php esc_html_e( '尚未配置远端站点。', 'heb-product-publisher' ); ?></p></div>
@@ -122,6 +145,14 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 
 			<h2 class="heb-pp-dash-section-title"><?php esc_html_e( '🏷 分类（terms）', 'heb-product-publisher' ); ?></h2>
 			<?php $this->render_table( 'terms', $sites ); ?>
+
+			<div class="heb-pp-dash-log-panel">
+				<div class="heb-pp-dash-log-header">
+					<strong><?php esc_html_e( '操作日志', 'heb-product-publisher' ); ?></strong>
+					<button type="button" class="button button-small" id="heb-pp-dash-log-clear"><?php esc_html_e( '清空', 'heb-product-publisher' ); ?></button>
+				</div>
+				<div id="heb-pp-dash-log" class="heb-pp-dash-log" aria-live="polite"></div>
+			</div>
 		</div>
 		<?php
 	}
@@ -145,7 +176,7 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 					<?php foreach ( $sites as $s ) : ?>
 						<th style="text-align:center;" data-site-id="<?php echo esc_attr( $s['id'] ); ?>"><?php echo esc_html( $s['label'] ); ?></th>
 					<?php endforeach; ?>
-					<th><?php esc_html_e( '操作', 'heb-product-publisher' ); ?></th>
+					<th class="heb-pp-dash-actions-col"><?php esc_html_e( '全部重发', 'heb-product-publisher' ); ?></th>
 				</tr>
 			</thead>
 			<tbody>
@@ -156,6 +187,7 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 						<tr
 							class="heb-pp-dash-row"
 							data-source-id="<?php echo esc_attr( $row['id'] ); ?>"
+							data-title="<?php echo esc_attr( $row['title'] ); ?>"
 							data-modified="<?php echo esc_attr( $row['modified'] ); ?>"
 							data-type="<?php echo esc_attr( $row['type'] ); ?>"
 							data-kind="<?php echo esc_attr( $kind ); ?>"
@@ -170,12 +202,15 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 							<td><code><?php echo esc_html( $row['type'] ); ?></code></td>
 							<td><code><?php echo esc_attr( $row['id'] ); ?></code></td>
 							<?php foreach ( $sites as $s ) : ?>
-								<td class="heb-pp-dash-cell" data-site-id="<?php echo esc_attr( $s['id'] ); ?>" style="text-align:center;">
-									<span class="heb-pp-dash-status heb-pp-dash-pending">·</span>
+								<td class="heb-pp-dash-cell" data-site-id="<?php echo esc_attr( $s['id'] ); ?>" data-site-label="<?php echo esc_attr( $s['label'] ); ?>">
+									<div class="heb-pp-dash-cell-inner">
+										<span class="heb-pp-dash-status heb-pp-dash-pending">·</span>
+										<button type="button" class="heb-pp-dash-cell-resend" title="<?php esc_attr_e( '重发到此站', 'heb-product-publisher' ); ?>" aria-label="<?php echo esc_attr( sprintf( __( '重发到 %s', 'heb-product-publisher' ), $s['label'] ) ); ?>">↻</button>
+									</div>
 								</td>
 							<?php endforeach; ?>
-							<td>
-								<button type="button" class="button button-small heb-pp-dash-resend" data-source-id="<?php echo esc_attr( $row['id'] ); ?>" data-kind="<?php echo esc_attr( $kind ); ?>"><?php esc_html_e( '↻ 重发', 'heb-product-publisher' ); ?></button>
+							<td class="heb-pp-dash-actions-col">
+								<button type="button" class="button button-small heb-pp-dash-resend" data-source-id="<?php echo esc_attr( $row['id'] ); ?>" data-kind="<?php echo esc_attr( $kind ); ?>" title="<?php esc_attr_e( '重发到全部/未同步站点', 'heb-product-publisher' ); ?>"><?php esc_html_e( '↻ 全部', 'heb-product-publisher' ); ?></button>
 							</td>
 						</tr>
 					<?php endforeach; ?>
@@ -351,6 +386,20 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 			}
 		}
 
+		$ok_count   = 0;
+		$fail_count = 0;
+		foreach ( $results as $sid => $result ) {
+			$site = Heb_Product_Publisher_Admin_Settings::get_site( $sid );
+			if ( $site ) {
+				$results[ $sid ]['label'] = (string) $site['label'];
+			}
+			if ( ! empty( $result['ok'] ) ) {
+				++$ok_count;
+			} else {
+				++$fail_count;
+			}
+		}
+
 		// 清缓存：重发后再次刷 manifest 会拿最新数据。
 		foreach ( $site_ids as $sid ) {
 			$site = Heb_Product_Publisher_Admin_Settings::get_site( $sid );
@@ -359,7 +408,15 @@ class Heb_Product_Publisher_Distribution_Dashboard {
 			}
 		}
 
-		wp_send_json_success( $results );
+		wp_send_json_success(
+			[
+				'results' => $results,
+				'summary' => [
+					'ok'   => $ok_count,
+					'fail' => $fail_count,
+				],
+			]
+		);
 	}
 
 	/**
