@@ -2,7 +2,19 @@
 (function ($) {
 	'use strict';
 
-	var $box, postId, currentJobId = null;
+	var $box, postId, currentJobId = null, currentXhr = null, statusPollTimer = null, userCancelled = false;
+
+	function fmtElapsed(seconds) {
+		seconds = Math.max(0, parseInt(seconds, 10) || 0);
+		var m = Math.floor(seconds / 60);
+		var s = seconds % 60;
+		return m + 'm' + (s < 10 ? '0' : '') + s + 's';
+	}
+
+	function showJobControls(active, stale) {
+		$('#heb-pp-btn-cancel-job').prop('hidden', !active);
+		$('#heb-pp-btn-retry-step').prop('hidden', !stale);
+	}
 
 	function escapeHtml(s) {
 		return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -22,14 +34,13 @@
 			if ($b.length) {
 				$b.prop('disabled', true).data('orig', $b.text()).text(HebPPHub.i18n.distributing);
 			}
-			$box.addClass('heb-pp-busy');
-			$('#heb-pp-btn-distribute').prop('disabled', true);
+			$('#heb-pp-btn-distribute, #heb-pp-btn-fetch').prop('disabled', true);
 		} else {
 			if ($b.length && $b.data('orig')) {
 				$b.prop('disabled', false).text($b.data('orig'));
 			}
-			$box.removeClass('heb-pp-busy');
 			$('#heb-pp-btn-distribute').prop('disabled', false);
+			$('#heb-pp-btn-fetch').prop('disabled', false);
 		}
 	}
 
@@ -167,11 +178,18 @@
 		if (!job) { return; }
 		var $result = $('#heb-pp-result');
 		var labels = job.site_labels || {};
-		var done = parseInt(job.index, 10) || 0;
 		var total = parseInt(job.total, 10) || 0;
-		var headline = HebPPHub.i18n.progress + ': ' + done + '/' + total;
+		var current = parseInt(job.processing_index, 10) || 0;
+		if (!current && job.status === 'running' && job.current_site) {
+			current = (parseInt(job.index, 10) || 0) + 1;
+		}
+		var headline = HebPPHub.i18n.progress + ': ' + current + '/' + total;
 		if (job.status === 'running' && job.current_label) {
-			headline += ' · ' + job.current_label + ' …';
+			headline += ' · ' + job.current_label;
+		}
+		if (job.step_started_at && job.status === 'running') {
+			var elapsed = Math.floor(Date.now() / 1000) - job.step_started_at;
+			headline += ' · ' + HebPPHub.i18n.elapsed + ' ' + fmtElapsed(elapsed);
 		}
 		var $head = $result.find('.heb-pp-job-head');
 		if (!$head.length) {
@@ -180,14 +198,22 @@
 			$head.text(headline);
 		}
 
+		var hintText = HebPPHub.i18n.stepWait;
+		if (stepIsStale(job)) {
+			hintText = HebPPHub.i18n.staleHint;
+		} else if (job.current_phase) {
+			hintText = job.current_phase;
+		}
 		var $hint = $result.find('.heb-pp-job-hint');
 		if (job.status === 'running' && job.current_site) {
 			if (!$hint.length) {
-				$result.find('.heb-pp-job-head').after('<p class="description heb-pp-job-hint">' + escapeHtml(HebPPHub.i18n.stepWait) + '</p>');
+				$result.find('.heb-pp-job-head').after('<p class="description heb-pp-job-hint' + (stepIsStale(job) ? ' heb-pp-stale' : '') + '">' + escapeHtml(hintText) + '</p>');
 			} else {
-				$hint.text(HebPPHub.i18n.stepWait);
+				$hint.text(hintText).toggleClass('heb-pp-stale', stepIsStale(job));
 			}
 		}
+
+		showJobControls(jobIsActive(job), stepIsStale(job));
 
 		Object.keys(job.results || {}).forEach(function (sid) {
 			renderDistribute(sid, job.results[sid], labels);
@@ -195,19 +221,31 @@
 		renderJobLog(job);
 	}
 
+	function stepIsStale(job) {
+		if (!job || job.status !== 'running' || !job.step_started_at) {
+			return false;
+		}
+		return (Math.floor(Date.now() / 1000) - job.step_started_at) > 180;
+	}
+
 	function jobIsActive(job) {
 		return job && (job.status === 'queued' || job.status === 'running');
 	}
 
 	function finishJob(job) {
+		stopStatusPoll();
 		setBusy($('#heb-pp-btn-distribute'), false);
+		showJobControls(false, false);
 		currentJobId = null;
+		currentXhr = null;
 		var $head = $('#heb-pp-result .heb-pp-job-head');
 		if ($head.length && job) {
 			if (job.status === 'done') {
 				$head.text(HebPPHub.i18n.done);
 			} else if (job.status === 'done_with_errors') {
 				$head.text(HebPPHub.i18n.donePartial);
+			} else if (job.status === 'cancelled') {
+				$head.text(HebPPHub.i18n.cancelJob);
 			} else if (job.status === 'failed') {
 				$head.text(HebPPHub.i18n.error);
 			}
@@ -215,8 +253,37 @@
 		$('#heb-pp-result .heb-pp-job-hint').remove();
 	}
 
-	function runJobStep(jobId) {
-		return $.ajax({
+	function stopStatusPoll() {
+		if (statusPollTimer) {
+			clearInterval(statusPollTimer);
+			statusPollTimer = null;
+		}
+	}
+
+	function pollJobStatus(jobId) {
+		return $.post(HebPPHub.ajaxUrl, {
+			action: 'heb_pp_hub_dist_status',
+			nonce: HebPPHub.nonce,
+			job_id: jobId
+		}).done(function (resp) {
+			if (resp && resp.success) {
+				renderJobProgress(resp.data);
+			}
+		});
+	}
+
+	function startStatusPoll(jobId) {
+		stopStatusPoll();
+		statusPollTimer = setInterval(function () {
+			pollJobStatus(jobId);
+		}, 3000);
+	}
+
+	function runJobStep(jobId, force) {
+		if (userCancelled) {
+			return $.Deferred().reject().promise();
+		}
+		currentXhr = $.ajax({
 			url: HebPPHub.ajaxUrl,
 			type: 'POST',
 			dataType: 'json',
@@ -224,26 +291,37 @@
 			data: {
 				action: 'heb_pp_hub_dist_step',
 				nonce: HebPPHub.nonce,
-				job_id: jobId
+				job_id: jobId,
+				force: force ? 1 : 0
 			}
 		});
+		return currentXhr;
 	}
 
-	function runJobChain(jobId) {
+	function runJobChain(jobId, force) {
+		if (userCancelled) {
+			return $.Deferred().resolve().promise();
+		}
 		currentJobId = jobId;
-		return runJobStep(jobId).done(function (resp) {
+		startStatusPoll(jobId);
+		return runJobStep(jobId, !!force).done(function (resp) {
+			if (userCancelled) { return; }
 			if (!resp || !resp.success) {
 				alert((resp && resp.data && resp.data.message) || HebPPHub.i18n.error);
 				setBusy($('#heb-pp-btn-distribute'), false);
+				showJobControls(false, false);
 				return;
 			}
 			var job = resp.data;
 			renderJobProgress(job);
 			if (jobIsActive(job)) {
-				return runJobChain(jobId);
+				return runJobChain(jobId, false);
 			}
 			finishJob(job);
 		}).fail(function (xhr) {
+			if (userCancelled || (xhr && xhr.statusText === 'abort')) {
+				return;
+			}
 			var msg = HebPPHub.i18n.error;
 			if (xhr && xhr.status === 0) {
 				msg += ' (timeout)';
@@ -252,7 +330,43 @@
 			}
 			alert(msg);
 			setBusy($('#heb-pp-btn-distribute'), false);
+			showJobControls(jobIsActive({ status: 'running' }), true);
+		}).always(function () {
+			currentXhr = null;
 		});
+	}
+
+	function cancelJob() {
+		if (!currentJobId) { return; }
+		if (!window.confirm(HebPPHub.i18n.cancelJob + '?')) { return; }
+		userCancelled = true;
+		if (currentXhr && currentXhr.abort) {
+			currentXhr.abort();
+		}
+		$.post(HebPPHub.ajaxUrl, {
+			action: 'heb_pp_hub_dist_cancel',
+			nonce: HebPPHub.nonce,
+			job_id: currentJobId
+		}).done(function (resp) {
+			if (resp && resp.success) {
+				finishJob(resp.data || { status: 'cancelled' });
+			}
+		}).always(function () {
+			userCancelled = false;
+		});
+	}
+
+	function resumeActiveJob(job) {
+		$('#heb-pp-result').html(
+			'<div class="heb-pp-job-head heb-pp-result-item info">' + escapeHtml(HebPPHub.i18n.distributing) + '</div>' +
+			'<p class="description heb-pp-job-hint">' + escapeHtml(HebPPHub.i18n.backgroundHint) + '</p>'
+		);
+		renderJobProgress(job);
+		setBusy($('#heb-pp-btn-distribute'), true);
+		startStatusPoll(job.id);
+		if (job.status === 'queued' || stepIsStale(job)) {
+			runJobChain(job.id, stepIsStale(job));
+		}
 	}
 
 	function buildDistributeData(ids) {
@@ -279,6 +393,7 @@
 	}
 
 	function startDistribute(ids) {
+		userCancelled = false;
 		$('#heb-pp-result').html(
 			'<div class="heb-pp-job-head heb-pp-result-item info">' + escapeHtml(HebPPHub.i18n.queued) + '</div>' +
 			'<p class="description heb-pp-job-hint">' + escapeHtml(HebPPHub.i18n.backgroundHint) + '</p>'
@@ -363,14 +478,15 @@
 			startDistribute(ids);
 		});
 
+		$('#heb-pp-btn-cancel-job').on('click', cancelJob);
+		$('#heb-pp-btn-retry-step').on('click', function () {
+			if (!currentJobId) { return; }
+			runJobChain(currentJobId, true);
+		});
+
 		if (HebPPHub.activeJob && HebPPHub.activeJob.id && jobIsActive(HebPPHub.activeJob)) {
-			$('#heb-pp-result').html(
-				'<div class="heb-pp-job-head heb-pp-result-item info">' + escapeHtml(HebPPHub.i18n.distributing) + '</div>' +
-				'<p class="description heb-pp-job-hint">' + escapeHtml(HebPPHub.i18n.backgroundHint) + '</p>'
-			);
-			renderJobProgress(HebPPHub.activeJob);
-			setBusy($('#heb-pp-btn-distribute'), true);
-			runJobChain(HebPPHub.activeJob.id);
+			currentJobId = HebPPHub.activeJob.id;
+			resumeActiveJob(HebPPHub.activeJob);
 		}
 	});
 })(jQuery);

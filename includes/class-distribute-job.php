@@ -58,11 +58,12 @@ class Heb_Product_Publisher_Distribute_Job {
 			'updated_at'     => $now,
 			'finished_at'    => 0,
 			'step_started_at'=> 0,
+			'current_phase'  => '',
 		];
 
 		update_option( self::OPT_PREFIX . $id, $rec, false );
 		update_option( self::OPT_ACTIVE_PREFIX . $post_id, $id, false );
-		self::append_log( $id, 'info', __( '分发任务已入队。', 'heb-product-publisher' ) );
+		self::append_log( $id, 'info', __( '分发任务已创建。', 'heb-product-publisher' ) );
 		return $id;
 	}
 
@@ -188,9 +189,11 @@ class Heb_Product_Publisher_Distribute_Job {
 		self::update(
 			$id,
 			[
-				'status'       => self::STATUS_CANCELLED,
-				'finished_at'  => time(),
-				'current_site' => '',
+				'status'          => self::STATUS_CANCELLED,
+				'finished_at'     => time(),
+				'current_site'    => '',
+				'step_started_at' => 0,
+				'current_phase'   => '',
 			]
 		);
 		self::clear_active_pointer( $id );
@@ -235,6 +238,8 @@ class Heb_Product_Publisher_Distribute_Job {
 				? $sites[ (string) $rec['current_site'] ]
 				: '',
 			'step_started_at' => (int) ( $rec['step_started_at'] ?? 0 ),
+			'current_phase'   => (string) ( $rec['current_phase'] ?? '' ),
+			'processing_index'=> self::processing_index( $rec ),
 			'results'      => isset( $rec['results'] ) && is_array( $rec['results'] ) ? $rec['results'] : [],
 			'log'          => isset( $rec['log'] ) && is_array( $rec['log'] ) ? $rec['log'] : [],
 			'site_labels'  => $sites,
@@ -250,6 +255,25 @@ class Heb_Product_Publisher_Distribute_Job {
 	 */
 	public static function is_active_status( $status ) {
 		return in_array( (string) $status, [ self::STATUS_QUEUED, self::STATUS_RUNNING ], true );
+	}
+
+	/**
+	 * @param array<string,mixed> $rec Job record.
+	 * @return int 1-based index of site being processed (or next queued).
+	 */
+	public static function processing_index( array $rec ) {
+		$index = (int) ( $rec['index'] ?? 0 );
+		$total = (int) ( $rec['total'] ?? 0 );
+		if ( $total <= 0 ) {
+			return 0;
+		}
+		if ( self::STATUS_RUNNING === (string) ( $rec['status'] ?? '' ) && ! empty( $rec['current_site'] ) ) {
+			return min( $total, $index + 1 );
+		}
+		if ( self::STATUS_QUEUED === (string) ( $rec['status'] ?? '' ) ) {
+			return min( $total, $index + 1 );
+		}
+		return min( $total, $index );
 	}
 
 	/**

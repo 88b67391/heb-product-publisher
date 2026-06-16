@@ -268,6 +268,14 @@
 	color: #8ec8ff;
 }
 
+.heb-pp-actions .button[hidden] {
+	display: none;
+}
+
+.heb-pp-job-hint.heb-pp-stale {
+	color: #b32d2e;
+}
+
 .heb-pp-busy {
 	opacity: 0.6;
 	pointer-events: none;

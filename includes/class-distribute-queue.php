@@ -12,9 +12,39 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Heb_Product_Publisher_Distribute_Queue {
 
 	const STEP_STALE_SECONDS = 900;
+	const STEP_LOCK_SECONDS  = 120;
 
 	/** @var self|null */
 	private static $instance = null;
+
+	/** @var string */
+	private static $ctx_job_id = '';
+
+	/**
+	 * @param string $message Phase message for active job log.
+	 * @return void
+	 */
+	public static function phase( $message ) {
+		if ( '' === self::$ctx_job_id ) {
+			return;
+		}
+		Heb_Product_Publisher_Distribute_Job::set_phase( self::$ctx_job_id, (string) $message );
+	}
+
+	/**
+	 * @param string $job_id Job id.
+	 * @return void
+	 */
+	private static function bind_job( $job_id ) {
+		self::$ctx_job_id = (string) $job_id;
+	}
+
+	/**
+	 * @return void
+	 */
+	private static function unbind_job() {
+		self::$ctx_job_id = '';
+	}
 
 	/**
 	 * @return self
@@ -48,9 +78,10 @@ class Heb_Product_Publisher_Distribute_Queue {
 	 * 处理当前 job 的下一站点（一次 AJAX 调用 = 一个站点）。
 	 *
 	 * @param string $job_id Job id.
+	 * @param bool   $force  Bypass in-flight lock (stale recovery / user retry).
 	 * @return array<string,mixed>|\WP_Error Updated job public view.
 	 */
-	public function process_step( $job_id ) {
+	public function process_step( $job_id, $force = false ) {
 		Heb_Product_Publisher_Runtime::raise();
 		if ( class_exists( 'Heb_Product_Publisher_Bootstrap_Queue' ) ) {
 			Heb_Product_Publisher_Bootstrap_Queue::register_long_action_filters();
@@ -67,9 +98,10 @@ class Heb_Product_Publisher_Distribute_Queue {
 
 		$step_started = (int) ( $rec['step_started_at'] ?? 0 );
 		if (
-			Heb_Product_Publisher_Distribute_Job::STATUS_RUNNING === (string) $rec['status']
+			! $force
+			&& Heb_Product_Publisher_Distribute_Job::STATUS_RUNNING === (string) $rec['status']
 			&& $step_started > 0
-			&& ( time() - $step_started ) < 120
+			&& ( time() - $step_started ) < self::STEP_LOCK_SECONDS
 		) {
 			return Heb_Product_Publisher_Distribute_Job::public_view( $rec );
 		}
@@ -106,6 +138,7 @@ class Heb_Product_Publisher_Distribute_Queue {
 				'status'          => Heb_Product_Publisher_Distribute_Job::STATUS_RUNNING,
 				'current_site'    => $site_id,
 				'step_started_at' => time(),
+				'current_phase'   => __( '准备分发…', 'heb-product-publisher' ),
 			]
 		);
 		Heb_Product_Publisher_Distribute_Job::append_log(
@@ -153,14 +186,25 @@ class Heb_Product_Publisher_Distribute_Queue {
 		$translator     = new Heb_Product_Publisher_Translator();
 		$hub            = Heb_Product_Publisher_Hub_UI::instance();
 
-		$hub->log_distribution_started( $post_id, $site );
-
+		self::bind_job( $job_id );
 		try {
-			$result = $hub->distribute_to_site( $post_id, $basepayload, $source_locale, $site, $site_overrides, $translator );
-		} catch ( \Throwable $e ) {
-			$msg    = sprintf( 'distribute_to_site: %s', $e->getMessage() );
-			$result = [ 'ok' => false, 'message' => $msg, 'locale' => '' ];
-			$hub->log_distribution_failure( $post_id, $site_id, $msg, $site );
+			$hub->log_distribution_started( $post_id, $site );
+			self::phase( __( '开始翻译并推送…', 'heb-product-publisher' ) );
+
+			try {
+				$result = $hub->distribute_to_site( $post_id, $basepayload, $source_locale, $site, $site_overrides, $translator );
+			} catch ( \Throwable $e ) {
+				$msg    = sprintf( 'distribute_to_site: %s', $e->getMessage() );
+				$result = [ 'ok' => false, 'message' => $msg, 'locale' => '' ];
+				$hub->log_distribution_failure( $post_id, $site_id, $msg, $site );
+			}
+		} finally {
+			self::unbind_job();
+		}
+
+		$rec = Heb_Product_Publisher_Distribute_Job::get( $job_id );
+		if ( ! $rec || ! Heb_Product_Publisher_Distribute_Job::is_active_status( (string) $rec['status'] ) ) {
+			return $rec ? Heb_Product_Publisher_Distribute_Job::public_view( $rec ) : new \WP_Error( 'heb_pp_dist_missing', __( '任务不存在。', 'heb-product-publisher' ) );
 		}
 
 		$result['label'] = $label;
