@@ -1,6 +1,6 @@
 <?php
 /**
- * 单篇文章 Hub 分发任务状态（后台 AS 队列，浏览器只轮询进度）。
+ * 单篇文章 Hub 分发任务状态（逐站 AJAX 推进，可刷新恢复）。
  *
  * @package HebProductPublisher
  */
@@ -57,6 +57,7 @@ class Heb_Product_Publisher_Distribute_Job {
 			'started_at'     => $now,
 			'updated_at'     => $now,
 			'finished_at'    => 0,
+			'step_started_at'=> 0,
 		];
 
 		update_option( self::OPT_PREFIX . $id, $rec, false );
@@ -233,6 +234,7 @@ class Heb_Product_Publisher_Distribute_Job {
 			'current_label'=> isset( $rec['current_site'], $sites[ (string) $rec['current_site'] ] )
 				? $sites[ (string) $rec['current_site'] ]
 				: '',
+			'step_started_at' => (int) ( $rec['step_started_at'] ?? 0 ),
 			'results'      => isset( $rec['results'] ) && is_array( $rec['results'] ) ? $rec['results'] : [],
 			'log'          => isset( $rec['log'] ) && is_array( $rec['log'] ) ? $rec['log'] : [],
 			'site_labels'  => $sites,

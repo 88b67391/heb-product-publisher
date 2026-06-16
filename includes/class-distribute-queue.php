@@ -1,6 +1,6 @@
 <?php
 /**
- * Hub 单篇分发后台队列（Action Scheduler，逐站执行）。
+ * Hub 单篇分发队列：任务状态入库，由前端逐站 AJAX 推进（不依赖 AS / WP-Cron）。
  *
  * @package HebProductPublisher
  */
@@ -11,8 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class Heb_Product_Publisher_Distribute_Queue {
 
-	const HOOK_STEP = 'heb_pp_hub_distribute_step';
-	const GROUP     = 'heb-pp-distribute';
+	const STEP_STALE_SECONDS = 900;
 
 	/** @var self|null */
 	private static $instance = null;
@@ -28,72 +27,73 @@ class Heb_Product_Publisher_Distribute_Queue {
 	}
 
 	private function __construct() {
-		add_action( self::HOOK_STEP, [ $this, 'handle_step' ], 10, 1 );
+		// 无 AS hook：避免在部分主机上任务入队后永远不执行。
 	}
 
 	/**
 	 * @param int                                              $post_id        Source post.
 	 * @param array<int,string>                                $site_ids       Site ids.
 	 * @param array<string,array<string,array<int,string>>>    $site_overrides Overrides.
-	 * @return string|\WP_Error Job id.
+	 * @return string Job id.
 	 */
 	public function enqueue( $post_id, array $site_ids, array $site_overrides = [] ) {
-		if ( ! function_exists( 'as_enqueue_async_action' ) ) {
-			return new \WP_Error( 'heb_pp_as_missing', __( 'Action Scheduler 未加载，无法后台分发。', 'heb-product-publisher' ) );
-		}
 		if ( empty( $site_ids ) ) {
-			return new \WP_Error( 'heb_pp_no_sites', __( '未选择目标站点。', 'heb-product-publisher' ) );
+			return '';
 		}
-
 		Heb_Product_Publisher_Distribute_Job::cancel_active_for_post( (int) $post_id );
-		$job_id = Heb_Product_Publisher_Distribute_Job::create( (int) $post_id, $site_ids, $site_overrides );
-		$this->schedule_step( $job_id, 0 );
-		$this->kick_runner();
-		return $job_id;
+		return Heb_Product_Publisher_Distribute_Job::create( (int) $post_id, $site_ids, $site_overrides );
 	}
 
 	/**
+	 * 处理当前 job 的下一站点（一次 AJAX 调用 = 一个站点）。
+	 *
 	 * @param string $job_id Job id.
-	 * @param int    $delay  Delay seconds.
-	 * @return void
+	 * @return array<string,mixed>|\WP_Error Updated job public view.
 	 */
-	public function schedule_step( $job_id, $delay = 0 ) {
-		if ( ! function_exists( 'as_enqueue_async_action' ) && ! function_exists( 'as_schedule_single_action' ) ) {
-			return;
-		}
-		$args = [ [ 'job_id' => (string) $job_id ] ];
-		if ( $delay > 0 && function_exists( 'as_schedule_single_action' ) ) {
-			as_schedule_single_action( time() + $delay, self::HOOK_STEP, $args, self::GROUP );
-			return;
-		}
-		as_enqueue_async_action( self::HOOK_STEP, $args, self::GROUP );
-	}
-
-	/**
-	 * @param array<int,mixed>|array<string,mixed> $args Args.
-	 * @return void
-	 */
-	public function handle_step( $args ) {
+	public function process_step( $job_id ) {
 		Heb_Product_Publisher_Runtime::raise();
-		$args   = $this->normalize_args( $args );
-		$job_id = (string) ( $args['job_id'] ?? '' );
-		if ( '' === $job_id ) {
-			return;
+		if ( class_exists( 'Heb_Product_Publisher_Bootstrap_Queue' ) ) {
+			Heb_Product_Publisher_Bootstrap_Queue::register_long_action_filters();
 		}
 
-		$rec = Heb_Product_Publisher_Distribute_Job::get( $job_id );
-		if ( ! $rec || ! Heb_Product_Publisher_Distribute_Job::is_active_status( (string) $rec['status'] ) ) {
-			return;
+		$job_id = (string) $job_id;
+		$rec    = Heb_Product_Publisher_Distribute_Job::get( $job_id );
+		if ( ! $rec ) {
+			return new \WP_Error( 'heb_pp_dist_missing', __( '任务不存在。', 'heb-product-publisher' ) );
+		}
+		if ( ! Heb_Product_Publisher_Distribute_Job::is_active_status( (string) $rec['status'] ) ) {
+			return Heb_Product_Publisher_Distribute_Job::public_view( $rec );
 		}
 
-		$post_id = (int) ( $rec['post_id'] ?? 0 );
-		$index   = (int) ( $rec['index'] ?? 0 );
-		$total   = (int) ( $rec['total'] ?? 0 );
+		$step_started = (int) ( $rec['step_started_at'] ?? 0 );
+		if (
+			Heb_Product_Publisher_Distribute_Job::STATUS_RUNNING === (string) $rec['status']
+			&& $step_started > 0
+			&& ( time() - $step_started ) < 120
+		) {
+			return Heb_Product_Publisher_Distribute_Job::public_view( $rec );
+		}
+		if (
+			Heb_Product_Publisher_Distribute_Job::STATUS_RUNNING === (string) $rec['status']
+			&& $step_started > 0
+			&& ( time() - $step_started ) >= self::STEP_STALE_SECONDS
+		) {
+			Heb_Product_Publisher_Distribute_Job::append_log(
+				$job_id,
+				'info',
+				__( '上一站点处理超时，正在重试…', 'heb-product-publisher' )
+			);
+		}
+
+		$post_id  = (int) ( $rec['post_id'] ?? 0 );
+		$index    = (int) ( $rec['index'] ?? 0 );
+		$total    = (int) ( $rec['total'] ?? 0 );
 		$site_ids = isset( $rec['site_ids'] ) && is_array( $rec['site_ids'] ) ? $rec['site_ids'] : [];
 
 		if ( $post_id <= 0 || $index >= $total || empty( $site_ids[ $index ] ) ) {
 			$this->finalize( $job_id );
-			return;
+			$rec = Heb_Product_Publisher_Distribute_Job::get( $job_id );
+			return $rec ? Heb_Product_Publisher_Distribute_Job::public_view( $rec ) : new \WP_Error( 'heb_pp_dist_missing', __( '任务不存在。', 'heb-product-publisher' ) );
 		}
 
 		$site_id = (string) $site_ids[ $index ];
@@ -103,8 +103,9 @@ class Heb_Product_Publisher_Distribute_Queue {
 		Heb_Product_Publisher_Distribute_Job::update(
 			$job_id,
 			[
-				'status'       => Heb_Product_Publisher_Distribute_Job::STATUS_RUNNING,
-				'current_site' => $site_id,
+				'status'          => Heb_Product_Publisher_Distribute_Job::STATUS_RUNNING,
+				'current_site'    => $site_id,
+				'step_started_at' => time(),
 			]
 		);
 		Heb_Product_Publisher_Distribute_Job::append_log(
@@ -124,7 +125,8 @@ class Heb_Product_Publisher_Distribute_Queue {
 			Heb_Product_Publisher_Distribute_Job::set_result( $job_id, $site_id, $result );
 			Heb_Product_Publisher_Distribute_Job::append_log( $job_id, 'fail', $label . ': ' . $result['message'] );
 			$this->advance( $job_id );
-			return;
+			$rec = Heb_Product_Publisher_Distribute_Job::get( $job_id );
+			return $rec ? Heb_Product_Publisher_Distribute_Job::public_view( $rec ) : new \WP_Error( 'heb_pp_dist_missing', __( '任务不存在。', 'heb-product-publisher' ) );
 		}
 
 		try {
@@ -134,14 +136,16 @@ class Heb_Product_Publisher_Distribute_Queue {
 				$job_id,
 				sprintf( 'build_payload: %s', $e->getMessage() )
 			);
-			return;
+			$rec = Heb_Product_Publisher_Distribute_Job::get( $job_id );
+			return $rec ? Heb_Product_Publisher_Distribute_Job::public_view( $rec ) : new \WP_Error( 'heb_pp_dist_missing', __( '任务不存在。', 'heb-product-publisher' ) );
 		}
 		if ( empty( $basepayload ) ) {
 			Heb_Product_Publisher_Distribute_Job::mark_failed(
 				$job_id,
 				__( '无法构造 payload（post 不存在或类型不允许分发）。', 'heb-product-publisher' )
 			);
-			return;
+			$rec = Heb_Product_Publisher_Distribute_Job::get( $job_id );
+			return $rec ? Heb_Product_Publisher_Distribute_Job::public_view( $rec ) : new \WP_Error( 'heb_pp_dist_missing', __( '任务不存在。', 'heb-product-publisher' ) );
 		}
 
 		$source_locale  = isset( $basepayload['source_locale'] ) ? (string) $basepayload['source_locale'] : 'en_US';
@@ -169,6 +173,8 @@ class Heb_Product_Publisher_Distribute_Queue {
 		}
 
 		$this->advance( $job_id );
+		$rec = Heb_Product_Publisher_Distribute_Job::get( $job_id );
+		return $rec ? Heb_Product_Publisher_Distribute_Job::public_view( $rec ) : new \WP_Error( 'heb_pp_dist_missing', __( '任务不存在。', 'heb-product-publisher' ) );
 	}
 
 	/**
@@ -185,16 +191,14 @@ class Heb_Product_Publisher_Distribute_Queue {
 		Heb_Product_Publisher_Distribute_Job::update(
 			$job_id,
 			[
-				'index'        => $index,
-				'current_site' => '',
+				'index'           => $index,
+				'current_site'    => '',
+				'step_started_at' => 0,
 			]
 		);
 		if ( $index >= $total ) {
 			$this->finalize( $job_id );
-			return;
 		}
-		$this->schedule_step( $job_id, 1 );
-		$this->kick_runner();
 	}
 
 	/**
@@ -220,9 +224,10 @@ class Heb_Product_Publisher_Distribute_Queue {
 		Heb_Product_Publisher_Distribute_Job::update(
 			$job_id,
 			[
-				'status'       => $status,
-				'finished_at'  => time(),
-				'current_site' => '',
+				'status'          => $status,
+				'finished_at'     => time(),
+				'current_site'    => '',
+				'step_started_at' => 0,
 			]
 		);
 		Heb_Product_Publisher_Distribute_Job::append_log(
@@ -238,28 +243,5 @@ class Heb_Product_Publisher_Distribute_Queue {
 				: __( '全部分发成功。', 'heb-product-publisher' )
 		);
 		Heb_Product_Publisher_Distribute_Job::clear_active_pointer( $job_id );
-	}
-
-	/**
-	 * @return void
-	 */
-	private function kick_runner() {
-		if ( has_action( 'action_scheduler_run_queue' ) ) {
-			do_action( 'action_scheduler_run_queue', self::GROUP );
-		}
-	}
-
-	/**
-	 * @param array<int,mixed>|array<string,mixed> $args Args.
-	 * @return array<string,mixed>
-	 */
-	private function normalize_args( $args ) {
-		if ( is_array( $args ) && ! isset( $args['job_id'] ) ) {
-			$first = reset( $args );
-			if ( is_array( $first ) ) {
-				return $first;
-			}
-		}
-		return is_array( $args ) ? $args : [];
 	}
 }

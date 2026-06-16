@@ -37,6 +37,7 @@ class Heb_Product_Publisher_Hub_UI {
 		add_action( 'wp_ajax_heb_pp_fetch_site_info', [ $this, 'ajax_fetch_site_info' ] );
 		add_action( 'wp_ajax_heb_pp_distribute', [ $this, 'ajax_distribute' ] );
 		add_action( 'wp_ajax_heb_pp_hub_dist_status', [ $this, 'ajax_distribute_status' ] );
+		add_action( 'wp_ajax_heb_pp_hub_dist_step', [ $this, 'ajax_distribute_step' ] );
 		add_action( 'wp_ajax_heb_pp_test_site', [ $this, 'ajax_test_site' ] );
 	}
 
@@ -105,15 +106,16 @@ class Heb_Product_Publisher_Hub_UI {
 					'fetching'      => __( '获取目标站点信息中…', 'heb-product-publisher' ),
 					'translating'   => __( '翻译中，请稍候…', 'heb-product-publisher' ),
 					'distributing'  => __( '后台分发中…', 'heb-product-publisher' ),
-					'queued'        => __( '任务已入队，后台处理中…', 'heb-product-publisher' ),
+					'queued'        => __( '任务已创建，开始逐站分发…', 'heb-product-publisher' ),
 					'progress'      => __( '进度', 'heb-product-publisher' ),
+					'stepWait'      => __( '当前站点处理中（翻译+推送可能需要数分钟），请保持页面打开…', 'heb-product-publisher' ),
 					'done'          => __( '完成。', 'heb-product-publisher' ),
 					'donePartial'   => __( '完成（部分失败）。', 'heb-product-publisher' ),
 					'error'         => __( '请求失败', 'heb-product-publisher' ),
 					'selectAtLeast' => __( '请至少选择一个目标站点。', 'heb-product-publisher' ),
 					'noTerms'       => __( '暂无分类项。', 'heb-product-publisher' ),
 					'useSource'     => __( '未获取目标分类，按源站 slug 自动匹配（不存在则创建）。', 'heb-product-publisher' ),
-					'backgroundHint'=> __( '可关闭此页；任务在后台继续，重新打开本文可查看进度。', 'heb-product-publisher' ),
+					'backgroundHint'=> __( '请保持页面打开直至完成；单站翻译较慢时可能需数分钟。刷新后可自动续跑。', 'heb-product-publisher' ),
 				],
 			]
 		);
@@ -418,8 +420,8 @@ class Heb_Product_Publisher_Hub_UI {
 		$site_overrides = $this->sanitize_site_overrides( $raw_overrides );
 
 		$job_id = Heb_Product_Publisher_Distribute_Queue::instance()->enqueue( $post_id, $site_ids, $site_overrides );
-		if ( is_wp_error( $job_id ) ) {
-			wp_send_json_error( [ 'message' => $job_id->get_error_message() ] );
+		if ( '' === $job_id ) {
+			wp_send_json_error( [ 'message' => __( '无法创建分发任务。', 'heb-product-publisher' ) ] );
 		}
 
 		$job = Heb_Product_Publisher_Distribute_Job::get( (string) $job_id );
@@ -450,6 +452,32 @@ class Heb_Product_Publisher_Hub_UI {
 			wp_send_json_error( [ 'message' => __( '无权查看该任务。', 'heb-product-publisher' ) ], 403 );
 		}
 		wp_send_json_success( Heb_Product_Publisher_Distribute_Job::public_view( $job ) );
+	}
+
+	/**
+	 * 执行分发任务的下一步（单站点）。
+	 */
+	public function ajax_distribute_step() {
+		if ( ! current_user_can( 'edit_posts' ) ) {
+			wp_send_json_error( [ 'message' => __( '权限不足。', 'heb-product-publisher' ) ], 403 );
+		}
+		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
+
+		$job_id = isset( $_POST['job_id'] ) ? sanitize_text_field( wp_unslash( (string) $_POST['job_id'] ) ) : '';
+		$job    = $job_id ? Heb_Product_Publisher_Distribute_Job::get( $job_id ) : null;
+		if ( ! $job ) {
+			wp_send_json_error( [ 'message' => __( '任务不存在。', 'heb-product-publisher' ) ] );
+		}
+		$post_id = (int) ( $job['post_id'] ?? 0 );
+		if ( $post_id <= 0 || ! current_user_can( 'edit_post', $post_id ) ) {
+			wp_send_json_error( [ 'message' => __( '无权执行该任务。', 'heb-product-publisher' ) ], 403 );
+		}
+
+		$result = Heb_Product_Publisher_Distribute_Queue::instance()->process_step( $job_id );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ] );
+		}
+		wp_send_json_success( $result );
 	}
 
 	/**
