@@ -3,6 +3,7 @@
 	'use strict';
 
 	var $box, postId, currentJobId = null, currentXhr = null, statusPollTimer = null, userCancelled = false;
+	var kickInFlight = false, lastKickIndex = -1;
 
 	function fmtElapsed(seconds) {
 		seconds = Math.max(0, parseInt(seconds, 10) || 0);
@@ -267,7 +268,15 @@
 			job_id: jobId
 		}).done(function (resp) {
 			if (resp && resp.success) {
-				renderJobProgress(resp.data);
+				var job = resp.data;
+				renderJobProgress(job);
+				if (!jobIsActive(job)) {
+					finishJob(job);
+					return;
+				}
+				if (shouldKickStep(job)) {
+					kickJobStep(jobId, false);
+				}
 			}
 		});
 	}
@@ -279,32 +288,42 @@
 		}, 3000);
 	}
 
-	function runJobStep(jobId, force) {
-		if (userCancelled) {
-			return $.Deferred().reject().promise();
+	function shouldKickStep(job) {
+		if (!job || userCancelled || kickInFlight) {
+			return false;
 		}
+		if (!jobIsActive(job)) {
+			return false;
+		}
+		if (stepIsStale(job)) {
+			return false;
+		}
+		if (job.status === 'queued') {
+			return true;
+		}
+		if (job.status === 'running' && !job.step_started_at && (parseInt(job.index, 10) || 0) < (parseInt(job.total, 10) || 0)) {
+			return lastKickIndex !== (parseInt(job.index, 10) || 0);
+		}
+		return false;
+	}
+
+	function kickJobStep(jobId, force) {
+		if (userCancelled) {
+			return;
+		}
+		kickInFlight = true;
 		currentXhr = $.ajax({
 			url: HebPPHub.ajaxUrl,
 			type: 'POST',
 			dataType: 'json',
-			timeout: 900000,
+			timeout: 30000,
 			data: {
 				action: 'heb_pp_hub_dist_step',
 				nonce: HebPPHub.nonce,
 				job_id: jobId,
 				force: force ? 1 : 0
 			}
-		});
-		return currentXhr;
-	}
-
-	function runJobChain(jobId, force) {
-		if (userCancelled) {
-			return $.Deferred().resolve().promise();
-		}
-		currentJobId = jobId;
-		startStatusPoll(jobId);
-		return runJobStep(jobId, !!force).done(function (resp) {
+		}).done(function (resp) {
 			if (userCancelled) { return; }
 			if (!resp || !resp.success) {
 				alert((resp && resp.data && resp.data.message) || HebPPHub.i18n.error);
@@ -314,26 +333,41 @@
 			}
 			var job = resp.data;
 			renderJobProgress(job);
-			if (jobIsActive(job)) {
-				return runJobChain(jobId, false);
+			lastKickIndex = parseInt(job.index, 10) || 0;
+			if (!jobIsActive(job)) {
+				finishJob(job);
 			}
-			finishJob(job);
 		}).fail(function (xhr) {
 			if (userCancelled || (xhr && xhr.statusText === 'abort')) {
 				return;
 			}
-			var msg = HebPPHub.i18n.error;
-			if (xhr && xhr.status === 0) {
-				msg += ' (timeout)';
-			} else if (xhr && xhr.status) {
-				msg += ': ' + xhr.status;
+			if (xhr && (xhr.status === 502 || xhr.status === 504 || xhr.status === 0)) {
+				var $hint = $('#heb-pp-result .heb-pp-job-hint');
+				if ($hint.length && HebPPHub.i18n.gatewayHint) {
+					$hint.text(HebPPHub.i18n.gatewayHint).addClass('heb-pp-stale');
+				}
+				return;
 			}
-			alert(msg);
+			alert(HebPPHub.i18n.error + ': ' + (xhr && xhr.status ? xhr.status : '?'));
 			setBusy($('#heb-pp-btn-distribute'), false);
 			showJobControls(jobIsActive({ status: 'running' }), true);
 		}).always(function () {
+			kickInFlight = false;
 			currentXhr = null;
 		});
+	}
+
+	function startJobRunner(jobId, force) {
+		if (userCancelled) {
+			return;
+		}
+		currentJobId = jobId;
+		startStatusPoll(jobId);
+		kickJobStep(jobId, !!force);
+	}
+
+	function runJobChain(jobId, force) {
+		startJobRunner(jobId, force);
 	}
 
 	function cancelJob() {
@@ -363,9 +397,13 @@
 		);
 		renderJobProgress(job);
 		setBusy($('#heb-pp-btn-distribute'), true);
+		currentJobId = job.id;
+		lastKickIndex = parseInt(job.index, 10) || 0;
 		startStatusPoll(job.id);
-		if (job.status === 'queued' || stepIsStale(job)) {
-			runJobChain(job.id, stepIsStale(job));
+		if (stepIsStale(job)) {
+			kickJobStep(job.id, true);
+		} else if (shouldKickStep(job)) {
+			kickJobStep(job.id, false);
 		}
 	}
 
@@ -394,6 +432,7 @@
 
 	function startDistribute(ids) {
 		userCancelled = false;
+		lastKickIndex = -1;
 		$('#heb-pp-result').html(
 			'<div class="heb-pp-job-head heb-pp-result-item info">' + escapeHtml(HebPPHub.i18n.queued) + '</div>' +
 			'<p class="description heb-pp-job-hint">' + escapeHtml(HebPPHub.i18n.backgroundHint) + '</p>'
@@ -481,7 +520,7 @@
 		$('#heb-pp-btn-cancel-job').on('click', cancelJob);
 		$('#heb-pp-btn-retry-step').on('click', function () {
 			if (!currentJobId) { return; }
-			runJobChain(currentJobId, true);
+			kickJobStep(currentJobId, true);
 		});
 
 		if (HebPPHub.activeJob && HebPPHub.activeJob.id && jobIsActive(HebPPHub.activeJob)) {

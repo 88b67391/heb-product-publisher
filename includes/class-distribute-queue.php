@@ -75,18 +75,13 @@ class Heb_Product_Publisher_Distribute_Queue {
 	}
 
 	/**
-	 * 处理当前 job 的下一站点（一次 AJAX 调用 = 一个站点）。
+	 * AJAX 入口：尽快返回 JSON，实际工作在后台继续（避免 Nginx 502）。
 	 *
 	 * @param string $job_id Job id.
 	 * @param bool   $force  Bypass in-flight lock (stale recovery / user retry).
-	 * @return array<string,mixed>|\WP_Error Updated job public view.
+	 * @return array<string,mixed>|\WP_Error Job public view (+ spawned flag when applicable).
 	 */
-	public function process_step( $job_id, $force = false ) {
-		Heb_Product_Publisher_Runtime::raise();
-		if ( class_exists( 'Heb_Product_Publisher_Bootstrap_Queue' ) ) {
-			Heb_Product_Publisher_Bootstrap_Queue::register_long_action_filters();
-		}
-
+	public function kick_step( $job_id, $force = false ) {
 		$job_id = (string) $job_id;
 		$rec    = Heb_Product_Publisher_Distribute_Job::get( $job_id );
 		if ( ! $rec ) {
@@ -96,15 +91,11 @@ class Heb_Product_Publisher_Distribute_Queue {
 			return Heb_Product_Publisher_Distribute_Job::public_view( $rec );
 		}
 
-		$step_started = (int) ( $rec['step_started_at'] ?? 0 );
-		if (
-			! $force
-			&& Heb_Product_Publisher_Distribute_Job::STATUS_RUNNING === (string) $rec['status']
-			&& $step_started > 0
-			&& ( time() - $step_started ) < self::STEP_LOCK_SECONDS
-		) {
+		if ( ! $this->should_spawn_worker( $rec, $force ) ) {
 			return Heb_Product_Publisher_Distribute_Job::public_view( $rec );
 		}
+
+		$step_started = (int) ( $rec['step_started_at'] ?? 0 );
 		if (
 			Heb_Product_Publisher_Distribute_Job::STATUS_RUNNING === (string) $rec['status']
 			&& $step_started > 0
@@ -115,6 +106,124 @@ class Heb_Product_Publisher_Distribute_Queue {
 				'info',
 				__( '上一站点处理超时，正在重试…', 'heb-product-publisher' )
 			);
+		}
+
+		$this->respond_and_run_background( $job_id, $force );
+		// respond_and_run_background() exits.
+		return Heb_Product_Publisher_Distribute_Job::public_view( $rec );
+	}
+
+	/**
+	 * @param array<string,mixed> $rec   Job record.
+	 * @param bool                $force Force respawn.
+	 * @return bool
+	 */
+	private function should_spawn_worker( array $rec, $force ) {
+		if ( $force ) {
+			return true;
+		}
+		$status       = (string) ( $rec['status'] ?? '' );
+		$step_started = (int) ( $rec['step_started_at'] ?? 0 );
+		$index        = (int) ( $rec['index'] ?? 0 );
+		$total        = (int) ( $rec['total'] ?? 0 );
+
+		if ( Heb_Product_Publisher_Distribute_Job::STATUS_QUEUED === $status ) {
+			return true;
+		}
+		if ( Heb_Product_Publisher_Distribute_Job::STATUS_RUNNING !== $status ) {
+			return false;
+		}
+		if ( $step_started > 0 ) {
+			if ( ( time() - $step_started ) < self::STEP_LOCK_SECONDS ) {
+				return false;
+			}
+			return ( time() - $step_started ) >= self::STEP_STALE_SECONDS;
+		}
+		return $index < $total;
+	}
+
+	/**
+	 * 先向浏览器返回 JSON，再在 PHP-FPM 后台跑完单站分发。
+	 *
+	 * @param string $job_id Job id.
+	 * @param bool   $force  Force retry.
+	 * @return void
+	 */
+	private function respond_and_run_background( $job_id, $force ) {
+		$job_id = (string) $job_id;
+		$rec    = Heb_Product_Publisher_Distribute_Job::get( $job_id );
+		if ( $rec && Heb_Product_Publisher_Distribute_Job::is_active_status( (string) $rec['status'] ) ) {
+			Heb_Product_Publisher_Distribute_Job::update(
+				$job_id,
+				[
+					'status'          => Heb_Product_Publisher_Distribute_Job::STATUS_RUNNING,
+					'step_started_at' => time(),
+					'current_phase'   => __( '正在启动后台任务…', 'heb-product-publisher' ),
+				]
+			);
+			$rec = Heb_Product_Publisher_Distribute_Job::get( $job_id );
+		}
+		$view   = $rec ? Heb_Product_Publisher_Distribute_Job::public_view( $rec ) : [];
+		$body   = wp_json_encode(
+			[
+				'success' => true,
+				'data'    => array_merge(
+					is_array( $view ) ? $view : [],
+					[ 'spawned' => true ]
+				),
+			]
+		);
+
+		while ( ob_get_level() > 0 ) {
+			ob_end_clean();
+		}
+		if ( ! headers_sent() ) {
+			status_header( 200 );
+			nocache_headers();
+			header( 'Content-Type: application/json; charset=UTF-8' );
+			if ( is_string( $body ) ) {
+				header( 'Content-Length: ' . strlen( $body ) );
+			}
+			header( 'Connection: close' );
+		}
+		if ( is_string( $body ) ) {
+			echo $body; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+		}
+
+		if ( function_exists( 'fastcgi_finish_request' ) ) {
+			fastcgi_finish_request();
+		} else {
+			flush();
+		}
+
+		Heb_Product_Publisher_Runtime::raise();
+		if ( class_exists( 'Heb_Product_Publisher_Bootstrap_Queue' ) ) {
+			Heb_Product_Publisher_Bootstrap_Queue::register_long_action_filters();
+		}
+
+		try {
+			$this->process_step_work( $job_id, $force );
+		} catch ( \Throwable $e ) {
+			Heb_Product_Publisher_Distribute_Job::mark_failed( $job_id, $e->getMessage() );
+		}
+		exit;
+	}
+
+	/**
+	 * 处理当前 job 的下一站点（后台执行，单站可能数分钟）。
+	 *
+	 * @param string $job_id Job id.
+	 * @param bool   $force  Bypass in-flight lock (stale recovery / user retry).
+	 * @return array<string,mixed>|\WP_Error Updated job public view.
+	 */
+	public function process_step_work( $job_id, $force = false ) {
+		$job_id = (string) $job_id;
+		$rec    = Heb_Product_Publisher_Distribute_Job::get( $job_id );
+		if ( ! $rec ) {
+			return new \WP_Error( 'heb_pp_dist_missing', __( '任务不存在。', 'heb-product-publisher' ) );
+		}
+		if ( ! Heb_Product_Publisher_Distribute_Job::is_active_status( (string) $rec['status'] ) ) {
+			return Heb_Product_Publisher_Distribute_Job::public_view( $rec );
 		}
 
 		$post_id  = (int) ( $rec['post_id'] ?? 0 );
@@ -185,6 +294,11 @@ class Heb_Product_Publisher_Distribute_Queue {
 		$site_overrides = isset( $rec['site_overrides'] ) && is_array( $rec['site_overrides'] ) ? $rec['site_overrides'] : [];
 		$translator     = new Heb_Product_Publisher_Translator();
 		$hub            = Heb_Product_Publisher_Hub_UI::instance();
+
+		$rec = Heb_Product_Publisher_Distribute_Job::get( $job_id );
+		if ( ! $rec || ! Heb_Product_Publisher_Distribute_Job::is_active_status( (string) $rec['status'] ) ) {
+			return $rec ? Heb_Product_Publisher_Distribute_Job::public_view( $rec ) : new \WP_Error( 'heb_pp_dist_missing', __( '任务不存在。', 'heb-product-publisher' ) );
+		}
 
 		self::bind_job( $job_id );
 		try {

@@ -120,7 +120,8 @@ class Heb_Product_Publisher_Hub_UI {
 					'selectAtLeast' => __( '请至少选择一个目标站点。', 'heb-product-publisher' ),
 					'noTerms'       => __( '暂无分类项。', 'heb-product-publisher' ),
 					'useSource'     => __( '未获取目标分类，按源站 slug 自动匹配（不存在则创建）。', 'heb-product-publisher' ),
-					'backgroundHint'=> __( '请保持页面打开直至完成；单站翻译较慢时可能需数分钟。刷新后可自动续跑。', 'heb-product-publisher' ),
+					'backgroundHint'=> __( '分发在服务器后台运行；下方日志会每几秒刷新。单站翻译可能需数分钟，请勿重复点击。刷新页面可自动续跑。', 'heb-product-publisher' ),
+					'gatewayHint'   => __( '网关超时（502）不影响后台任务，请稍候看日志是否继续更新。', 'heb-product-publisher' ),
 				],
 			]
 		);
@@ -480,7 +481,7 @@ class Heb_Product_Publisher_Hub_UI {
 			wp_send_json_error( [ 'message' => __( '无权执行该任务。', 'heb-product-publisher' ) ], 403 );
 		}
 
-		$result = Heb_Product_Publisher_Distribute_Queue::instance()->process_step(
+		$result = Heb_Product_Publisher_Distribute_Queue::instance()->kick_step(
 			$job_id,
 			! empty( $_POST['force'] )
 		);

@@ -200,6 +200,20 @@ class Heb_Product_Publisher_Distribute_Job {
 	}
 
 	/**
+	 * @param string $id      Job id.
+	 * @param string $message Phase message shown in UI.
+	 * @return void
+	 */
+	public static function set_phase( $id, $message ) {
+		self::update(
+			$id,
+			[
+				'current_phase' => (string) $message,
+			]
+		);
+	}
+
+	/**
 	 * @param string $id Job id.
 	 * @return void
 	 */
