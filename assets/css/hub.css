@@ -224,6 +224,50 @@
 	text-decoration: none;
 }
 
+.heb-pp-result-item.info {
+	background: #f0f6fc;
+	border-left: 3px solid #2271b1;
+}
+
+.heb-pp-job-hint {
+	margin: 4px 0 8px;
+	color: #646970;
+}
+
+.heb-pp-job-log {
+	margin-top: 8px;
+	max-height: 160px;
+	overflow-y: auto;
+	background: #1d2327;
+	color: #f0f0f1;
+	padding: 8px 10px;
+	font-family: Menlo, Consolas, monospace;
+	font-size: 11px;
+	line-height: 1.45;
+	border-radius: 3px;
+}
+
+.heb-pp-job-log-line {
+	margin: 0 0 4px;
+	word-break: break-word;
+}
+
+.heb-pp-job-log-time {
+	color: #9ba3af;
+}
+
+.heb-pp-job-log-ok {
+	color: #68de7c;
+}
+
+.heb-pp-job-log-fail {
+	color: #ff8a8a;
+}
+
+.heb-pp-job-log-info {
+	color: #8ec8ff;
+}
+
 .heb-pp-busy {
 	opacity: 0.6;
 	pointer-events: none;

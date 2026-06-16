@@ -36,6 +36,7 @@ class Heb_Product_Publisher_Hub_UI {
 
 		add_action( 'wp_ajax_heb_pp_fetch_site_info', [ $this, 'ajax_fetch_site_info' ] );
 		add_action( 'wp_ajax_heb_pp_distribute', [ $this, 'ajax_distribute' ] );
+		add_action( 'wp_ajax_heb_pp_hub_dist_status', [ $this, 'ajax_distribute_status' ] );
 		add_action( 'wp_ajax_heb_pp_test_site', [ $this, 'ajax_test_site' ] );
 	}
 
@@ -74,6 +75,7 @@ class Heb_Product_Publisher_Hub_UI {
 
 		$post_id    = isset( $_GET['post'] ) ? (int) $_GET['post'] : 0;
 		$source_map = $post_id ? Heb_Product_Publisher_Sync::get_term_slugs_map( $post_id ) : [];
+		$active_job = $post_id ? Heb_Product_Publisher_Distribute_Job::get_active_for_post( $post_id ) : null;
 
 		// 前端只关心 slug 字符串数组（用来预选目标站对应分类）。从 v3.0 的对象数组里抽出 slug。
 		$source_slugs_flat = [];
@@ -98,15 +100,20 @@ class Heb_Product_Publisher_Hub_UI {
 				'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
 				'nonce'        => wp_create_nonce( self::NONCE_ACTION ),
 				'sourceSlugs'  => (object) $source_slugs_flat,
+				'activeJob'    => $active_job ? Heb_Product_Publisher_Distribute_Job::public_view( $active_job ) : null,
 				'i18n'         => [
 					'fetching'      => __( '获取目标站点信息中…', 'heb-product-publisher' ),
 					'translating'   => __( '翻译中，请稍候…', 'heb-product-publisher' ),
-					'distributing'  => __( '分发中…', 'heb-product-publisher' ),
+					'distributing'  => __( '后台分发中…', 'heb-product-publisher' ),
+					'queued'        => __( '任务已入队，后台处理中…', 'heb-product-publisher' ),
+					'progress'      => __( '进度', 'heb-product-publisher' ),
 					'done'          => __( '完成。', 'heb-product-publisher' ),
+					'donePartial'   => __( '完成（部分失败）。', 'heb-product-publisher' ),
 					'error'         => __( '请求失败', 'heb-product-publisher' ),
 					'selectAtLeast' => __( '请至少选择一个目标站点。', 'heb-product-publisher' ),
 					'noTerms'       => __( '暂无分类项。', 'heb-product-publisher' ),
 					'useSource'     => __( '未获取目标分类，按源站 slug 自动匹配（不存在则创建）。', 'heb-product-publisher' ),
+					'backgroundHint'=> __( '可关闭此页；任务在后台继续，重新打开本文可查看进度。', 'heb-product-publisher' ),
 				],
 			]
 		);
@@ -192,6 +199,7 @@ class Heb_Product_Publisher_Hub_UI {
 				<?php endif; ?>
 
 				<div id="heb-pp-result" class="heb-pp-result" aria-live="polite"></div>
+				<div id="heb-pp-job-log" class="heb-pp-job-log" hidden></div>
 
 				<?php if ( ! empty( $distributions ) ) : ?>
 					<div class="heb-pp-hub-history">
@@ -385,17 +393,13 @@ class Heb_Product_Publisher_Hub_UI {
 	}
 
 	/**
-	 * 翻译并分发。
-	 *
-	 * 整个流程包裹 try/catch：任何意料外异常（OOM / 致命 fatal / 第三方钩子抛错）
-	 * 都至少落一条日志，避免"分发失败连日志都没"的静默状况。
+	 * 翻译并分发：入队后台任务，立即返回 job_id（避免浏览器长连接超时）。
 	 */
 	public function ajax_distribute() {
 		if ( ! current_user_can( 'edit_posts' ) ) {
 			wp_send_json_error( [ 'message' => __( '权限不足。', 'heb-product-publisher' ) ], 403 );
 		}
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
-		Heb_Product_Publisher_Runtime::raise();
 
 		$post_id = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
 		if ( $post_id <= 0 || ! current_user_can( 'edit_post', $post_id ) ) {
@@ -413,43 +417,61 @@ class Heb_Product_Publisher_Hub_UI {
 			: [];
 		$site_overrides = $this->sanitize_site_overrides( $raw_overrides );
 
-		try {
-			$basepayload = Heb_Product_Publisher_Sync::build_payload( $post_id );
-		} catch ( \Throwable $e ) {
-			$msg = sprintf( 'build_payload threw: %s @%s:%d', $e->getMessage(), $e->getFile(), $e->getLine() );
-			$this->log_failure( $post_id, '', $msg );
-			wp_send_json_error( [ 'message' => $msg ] );
-		}
-		if ( empty( $basepayload ) ) {
-			wp_send_json_error( [ 'message' => __( '无法构造 payload（post 不存在或类型不允许分发）。', 'heb-product-publisher' ) ] );
+		$job_id = Heb_Product_Publisher_Distribute_Queue::instance()->enqueue( $post_id, $site_ids, $site_overrides );
+		if ( is_wp_error( $job_id ) ) {
+			wp_send_json_error( [ 'message' => $job_id->get_error_message() ] );
 		}
 
-		$source_locale = isset( $basepayload['source_locale'] ) ? (string) $basepayload['source_locale'] : 'en_US';
-		$translator    = new Heb_Product_Publisher_Translator();
+		$job = Heb_Product_Publisher_Distribute_Job::get( (string) $job_id );
+		wp_send_json_success(
+			[
+				'job_id' => (string) $job_id,
+				'job'    => $job ? Heb_Product_Publisher_Distribute_Job::public_view( $job ) : null,
+			]
+		);
+	}
 
-		$results = [];
-		foreach ( $site_ids as $sid ) {
-			$site = Heb_Product_Publisher_Admin_Settings::get_site( $sid );
-			if ( ! $site ) {
-				$results[ $sid ] = [ 'ok' => false, 'message' => __( '未找到站点。', 'heb-product-publisher' ) ];
-				$this->log_failure( $post_id, (string) $sid, __( '未找到站点。', 'heb-product-publisher' ) );
-				continue;
-			}
-
-			// 入口先落一条 "started" 日志：即使下面 OpenRouter / Receiver hang 死、
-			// 浏览器超时断开、PHP 后台继续跑，用户在日志页至少看到分发已发起。
-			$this->log_started( $post_id, $site );
-
-			try {
-				$results[ $sid ] = $this->distribute_to_site( $post_id, $basepayload, $source_locale, $site, $site_overrides, $translator );
-			} catch ( \Throwable $e ) {
-				$msg = sprintf( 'distribute_to_site threw: %s @%s:%d', $e->getMessage(), $e->getFile(), $e->getLine() );
-				$results[ $sid ] = [ 'ok' => false, 'message' => $msg, 'locale' => '' ];
-				$this->log_failure( $post_id, (string) $sid, $msg, $site );
-			}
+	/**
+	 * 轮询单篇分发任务进度。
+	 */
+	public function ajax_distribute_status() {
+		if ( ! current_user_can( 'edit_posts' ) ) {
+			wp_send_json_error( [ 'message' => __( '权限不足。', 'heb-product-publisher' ) ], 403 );
 		}
+		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
 
-		wp_send_json_success( $results );
+		$job_id = isset( $_POST['job_id'] ) ? sanitize_text_field( wp_unslash( (string) $_POST['job_id'] ) ) : '';
+		$job    = $job_id ? Heb_Product_Publisher_Distribute_Job::get( $job_id ) : null;
+		if ( ! $job ) {
+			wp_send_json_error( [ 'message' => __( '任务不存在。', 'heb-product-publisher' ) ] );
+		}
+		$post_id = (int) ( $job['post_id'] ?? 0 );
+		if ( $post_id <= 0 || ! current_user_can( 'edit_post', $post_id ) ) {
+			wp_send_json_error( [ 'message' => __( '无权查看该任务。', 'heb-product-publisher' ) ], 403 );
+		}
+		wp_send_json_success( Heb_Product_Publisher_Distribute_Job::public_view( $job ) );
+	}
+
+	/**
+	 * 在分发刚开始时立即落一条日志，状态 = 'started'。
+	 *
+	 * @param int                  $post_id Source post id.
+	 * @param array<string,string> $site    Remote site row.
+	 * @return void
+	 */
+	public function log_distribution_started( $post_id, array $site ) {
+		$this->log_started( $post_id, $site );
+	}
+
+	/**
+	 * @param int                       $post_id Post id.
+	 * @param string                    $sid     Site id.
+	 * @param string                    $message Message.
+	 * @param array<string,string>|null $site    Site row.
+	 * @return void
+	 */
+	public function log_distribution_failure( $post_id, $sid, $message, $site = null ) {
+		$this->log_failure( $post_id, $sid, $message, $site );
 	}
 
 	/**

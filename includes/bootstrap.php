@@ -45,6 +45,8 @@ require_once __DIR__ . '/class-bootstrap-queue.php';
 require_once __DIR__ . '/class-bootstrap-worker.php';
 require_once __DIR__ . '/class-bootstrap-tool.php';
 require_once __DIR__ . '/class-bootstrap-audit.php';
+require_once __DIR__ . '/class-distribute-job.php';
+require_once __DIR__ . '/class-distribute-queue.php';
 require_once __DIR__ . '/class-distribution-dashboard.php';
 require_once __DIR__ . '/class-delete-cascade.php';
 require_once __DIR__ . '/class-runtime.php';
@@ -79,6 +81,7 @@ if ( Heb_Product_Publisher_Admin_Settings::is_hub_mode() ) {
 	Heb_Product_Publisher_Bootstrap_Worker::instance();
 	Heb_Product_Publisher_Bootstrap_Audit::instance();
 	Heb_Product_Publisher_Distribution_Dashboard::instance();
+	Heb_Product_Publisher_Distribute_Queue::instance();
 	Heb_Product_Publisher_Delete_Cascade::instance();
 }
 
